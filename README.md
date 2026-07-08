@@ -80,6 +80,21 @@ Pour un numéro **inconnu** du groupe, une notification discrète propose un
 bouton **« Signaler comme spam »** qui prévient tout le groupe en un tap,
 sans ouvrir l'app.
 
+### Autres fonctionnalités de l'app
+
+- **Overlay plein écran** (mode Alerter) : sur un appel suspect, un écran
+  rouge s'affiche par-dessus l'appel avec l'info riche (signalements,
+  opérateur) et les actions Signaler / Raccrocher — façon Truecaller, sans
+  être l'app téléphone par défaut.
+- **Onglet Historique** : journal local des appels screenés (numéro,
+  verdict, action, opérateur, heure) — pour voir après coup ce qui a été
+  bloqué/alerté.
+- **Exemption des contacts** (activée par défaut) : un numéro dans tes
+  contacts n'est jamais filtré, pour éviter les faux positifs.
+- **Cache hors-ligne** : la liste des numéros connus est synchronisée
+  localement, donc le blocage/silence reste instantané et fiable même si le
+  serveur est lent ou injoignable.
+
 ## Le backend
 
 ```bash
@@ -143,6 +158,8 @@ Les routes admin exigent `X-Admin-Key`.
 | `POST /api/join-requests/:id/approve` | admin | Approuver → crée le membre + clé |
 | `POST /api/join-requests/:id/reject` | admin | Rejeter une demande |
 | `POST /api/users` `{name}` | admin | Créer un membre directement |
+| `POST /api/reports/bulk` `{numbers[], label?}` | admin | Import en masse (sans rate-limit) |
+| `GET /api/operators` | membre | Réputation par opérateur (quels grossistes concentrent le spam) |
 | `POST /api/update-lists` | admin | Forcer la mise à jour des listes publiques |
 
 Un numéro est marqué `suspicious` s'il est signalé par le groupe, présent
