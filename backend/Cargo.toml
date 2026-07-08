@@ -5,7 +5,7 @@ edition = "2021"
 description = "Backend communautaire de signalement de numéros spam (Rust)"
 
 [dependencies]
-axum = "0.7"
+axum = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
 serde = { version = "1", features = ["derive"] }
