@@ -1,0 +1,17 @@
+# Configuration cargo-deny : contrôles de sécurité/supply-chain.
+# Lancer : cargo deny check advisories bans sources
+# (CI : cargo-audit couvre déjà les advisories/CVE ; cargo-deny en local
+# ajoute le contrôle des sources et des doublons de dépendances.)
+
+[advisories]
+# Refuse une dépendance dont la version a été retirée (yanked).
+yanked = "deny"
+
+[bans]
+# On tolère plusieurs versions d'une même crate (fréquent dans l'écosystème).
+multiple-versions = "allow"
+
+[sources]
+# N'autorise que des crates provenant de registres/dépôts connus.
+unknown-registry = "deny"
+unknown-git = "deny"

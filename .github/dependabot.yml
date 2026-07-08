@@ -1,0 +1,33 @@
+# Mises à jour automatiques des dépendances et alertes de sécurité.
+# https://docs.github.com/code-security/dependabot
+version: 2
+updates:
+  # Dépendances du backend Rust
+  - package-ecosystem: "cargo"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      # Regroupe les mises à jour mineures/patch en une seule PR.
+      backend-minor:
+        update-types: ["minor", "patch"]
+
+  # Dépendances de l'app Flutter/Dart
+  - package-ecosystem: "pub"
+    directory: "/app"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+
+  # Images de base Docker (Dockerfile racine)
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # Versions des actions dans les workflows GitHub
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
