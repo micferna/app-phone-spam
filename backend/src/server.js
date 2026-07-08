@@ -6,16 +6,18 @@ import { updateLists } from './update-lists.js';
 
 const app = express();
 app.use(express.json({ limit: '8kb' }));
+app.use(express.urlencoded({ extended: false, limit: '8kb' }));
 
-// En-têtes de sécurité (page d'accueil incluse ; le CSP n'autorise que
-// le style inline de la page, aucun script).
+// En-têtes de sécurité. Le CSP n'autorise que le style inline de la page
+// d'accueil et l'envoi du formulaire d'adhésion vers ce même serveur ;
+// aucun script, aucune ressource externe.
 app.use((_req, res, next) => {
   res.set({
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
     'Referrer-Policy': 'no-referrer',
     'Content-Security-Policy':
-      "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+      "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'",
   });
   next();
 });
@@ -23,6 +25,28 @@ app.use((_req, res, next) => {
 const PORT = process.env.PORT || 3000;
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
+
+// Échappe le HTML : toute donnée fournie par un utilisateur qui finit
+// dans une page est passée par ici (anti-XSS stocké/réfléchi).
+const escapeHtml = (s) =>
+  String(s).replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
+  );
+
+// Nettoie un champ texte libre : retire les caractères de contrôle
+// (dont \0), normalise les espaces, coupe à la longueur max. On ne
+// "détecte" pas le code — on neutralise : stockage nettoyé + échappement
+// systématique à l'affichage.
+const cleanText = (v, max) => {
+  if (v == null) return null;
+  const s = String(v)
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max);
+  return s.length ? s : null;
+};
 
 const safeEqual = (a, b) => {
   const ab = Buffer.from(String(a));
@@ -111,6 +135,26 @@ function adminAuth(req, res, next) {
 
 app.get('/api/health', (_req, res) => res.json({ ok: true }));
 
+// Petite page de confirmation réutilisable (titre + texte déjà échappés
+// par l'appelant si besoin).
+function confirmationPage(title, htmlBody) {
+  return `<!doctype html>
+<html lang="fr"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(title)}</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font:17px/1.6 system-ui, sans-serif; max-width:560px;
+    margin:0 auto; padding:56px 24px; }
+  a { color:#c43c2e; }
+</style></head>
+<body>
+<h1>${escapeHtml(title)}</h1>
+<p>${htmlBody}</p>
+<p><a href="/">← Retour à l'accueil</a></p>
+</body></html>`;
+}
+
 // --- Page d'accueil publique : présentation du projet ---
 app.get('/', (_req, res) => {
   const numbers = db
@@ -131,7 +175,7 @@ app.get('/', (_req, res) => {
     --bg:#fdfaf7; --fg:#2b2320; --muted:#8a7a72; --accent:#c43c2e;
     --card:#f4ece6; --border:#e5d8cf; }
   @media (prefers-color-scheme: dark) { :root {
-    --bg:#191412; --fg:#ece4de; --muted:#a08d84; --accent:#e briefly05548;
+    --bg:#191412; --fg:#ece4de; --muted:#a08d84; --accent:#e05548;
     --card:#231c19; --border:#372c27; } }
   * { margin:0; box-sizing:border-box; }
   body { background:var(--bg); color:var(--fg);
@@ -151,6 +195,12 @@ app.get('/', (_req, res) => {
   .foot { margin-top:40px; padding-top:20px; border-top:1px solid var(--border);
     color:var(--muted); font-size:.9rem; }
   code { background:var(--card); padding:2px 6px; border-radius:6px; font-size:.88em; }
+  form { display:flex; flex-direction:column; gap:10px; margin-top:12px; }
+  input, textarea { font:inherit; padding:10px 12px; border-radius:10px;
+    border:1px solid var(--border); background:var(--card); color:var(--fg); }
+  textarea { resize:vertical; min-height:64px; }
+  button { font:inherit; font-weight:600; padding:12px; border:none;
+    border-radius:10px; background:var(--accent); color:#fff; cursor:pointer; }
 </style>
 </head>
 <body>
@@ -182,6 +232,20 @@ numéro rappelle.</p>
 l'<a href="https://www.arcep.fr">ARCEP</a> (0162, 0270, 0377,
 0424, 0568, 0948…) et les listes communautaires publiques,
 remises à jour automatiquement toutes les 24&nbsp;heures.</p>
+
+<h2>Rejoindre le groupe</h2>
+<p>L'accès se fait sur invitation (une clé personnelle par membre, pour
+éviter les faux signalements). Envoie une demande, l'administrateur te
+transmettra ta clé.</p>
+<form method="POST" action="/api/join-requests">
+  <input name="name" maxlength="64" required
+    placeholder="Prénom ou pseudo" autocomplete="off">
+  <input name="contact" maxlength="128"
+    placeholder="Comment te joindre ? (Signal, e-mail, tel…)" autocomplete="off">
+  <textarea name="message" maxlength="280"
+    placeholder="Un mot (facultatif) : qui es-tu, qui te connaît dans le groupe…"></textarea>
+  <button type="submit">Envoyer ma demande</button>
+</form>
 
 <h2>Code source</h2>
 <p>Projet libre :
@@ -286,6 +350,84 @@ app.post('/api/bootstrap', rateLimit('bootstrap', 3_600_000, 5), (req, res) => {
     adminKey,
     note: 'Conserve précieusement adminKey : elle ne sera plus jamais affichée.',
   });
+});
+
+// --- Demande d'adhésion depuis la page publique (formulaire HTML) ---
+// Ouvert à tous mais fortement limité ; l'admin approuve ensuite.
+app.post('/api/join-requests', rateLimit('join', 3_600_000, 5), (req, res) => {
+  const name = cleanText(req.body?.name, 64);
+  const contact = cleanText(req.body?.contact, 128);
+  const message = cleanText(req.body?.message, 280);
+  if (!name) {
+    return res
+      .status(400)
+      .type('html')
+      .send(confirmationPage('Nom manquant', 'Indique au moins un prénom ou pseudo.'));
+  }
+  const pending = db
+    .prepare("SELECT COUNT(*) AS c FROM join_requests WHERE status = 'pending'")
+    .get().c;
+  // Garde-fou anti-flood global : file d'attente plafonnée.
+  if (pending >= 200) {
+    return res
+      .status(429)
+      .type('html')
+      .send(confirmationPage('File pleine', 'Trop de demandes en attente, réessaie plus tard.'));
+  }
+  db.prepare(
+    'INSERT INTO join_requests (name, contact, message, ip) VALUES (?, ?, ?, ?)'
+  ).run(name, contact, message, clientIp(req));
+  res
+    .status(201)
+    .type('html')
+    .send(
+      confirmationPage(
+        'Demande envoyée ✅',
+        `Merci ${escapeHtml(name)} ! L'administrateur du groupe va examiner ta demande et te transmettra ta clé d'accès.`
+      )
+    );
+});
+
+// --- Admin : lister les demandes d'adhésion en attente ---
+app.get('/api/join-requests', adminAuth, (_req, res) => {
+  const rows = db
+    .prepare(
+      "SELECT id, name, contact, message, created_at FROM join_requests WHERE status = 'pending' ORDER BY created_at"
+    )
+    .all();
+  res.json(rows);
+});
+
+// --- Admin : approuver une demande → crée l'utilisateur + sa clé ---
+app.post('/api/join-requests/:id/approve', adminAuth, (req, res) => {
+  const id = Number.parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'ID invalide' });
+  const reqRow = db
+    .prepare("SELECT name FROM join_requests WHERE id = ? AND status = 'pending'")
+    .get(id);
+  if (!reqRow) return res.status(404).json({ error: 'Demande introuvable' });
+  // Nom unique : suffixe si nécessaire.
+  let name = reqRow.name;
+  for (let i = 2; db.prepare('SELECT 1 FROM users WHERE name = ?').get(name); i++) {
+    name = `${reqRow.name} (${i})`;
+  }
+  const apiKey = crypto.randomBytes(24).toString('hex');
+  const tx = db.transaction(() => {
+    db.prepare('INSERT INTO users (name, api_key) VALUES (?, ?)').run(name, apiKey);
+    db.prepare("UPDATE join_requests SET status = 'approved' WHERE id = ?").run(id);
+  });
+  tx();
+  res.json({ name, apiKey });
+});
+
+// --- Admin : rejeter une demande ---
+app.post('/api/join-requests/:id/reject', adminAuth, (req, res) => {
+  const id = Number.parseInt(req.params.id, 10);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'ID invalide' });
+  const info = db
+    .prepare("UPDATE join_requests SET status = 'rejected' WHERE id = ? AND status = 'pending'")
+    .run(id);
+  res.json({ rejected: info.changes > 0 });
 });
 
 // --- Admin : créer un utilisateur (proche) et sa clé ---

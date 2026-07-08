@@ -52,5 +52,18 @@ db.exec(`
     imported_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  -- Demandes d'adhésion déposées depuis la page publique. L'admin les
+  -- approuve (→ création d'un utilisateur + clé) ou les rejette.
+  CREATE TABLE IF NOT EXISTS join_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    contact TEXT,
+    message TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    ip TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
   CREATE INDEX IF NOT EXISTS idx_reports_number ON reports(number);
+  CREATE INDEX IF NOT EXISTS idx_join_status ON join_requests(status);
 `);

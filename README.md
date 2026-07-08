@@ -57,7 +57,11 @@ prioritaire si tu préfères la fournir toi-même.)
 | `DELETE /api/reports/:number` | Retirer son signalement |
 | `GET /api/lookup/:number` | Vérif temps réel (appel entrant) |
 | `GET /api/numbers` | Liste complète (synchro iOS) |
-| `POST /api/users` (header `X-Admin-Key`) | Créer un proche |
+| `POST /api/join-requests` (public) | Demande d'adhésion (formulaire de la page d'accueil) |
+| `GET /api/join-requests` (admin) | Lister les demandes en attente |
+| `POST /api/join-requests/:id/approve` (admin) | Approuver → crée l'utilisateur + renvoie sa clé |
+| `POST /api/join-requests/:id/reject` (admin) | Rejeter une demande |
+| `POST /api/users` (header `X-Admin-Key`) | Créer un proche directement |
 
 Un numéro est `suspicious` s'il est signalé par le groupe, présent dans une
 liste publique importée, **ou** dans les préfixes ARCEP réservés au démarchage
