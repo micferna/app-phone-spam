@@ -11,8 +11,9 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3000:3000"
-    environment:
-      - ADMIN_KEY=${ADMIN_KEY}
+    # Pas d'ADMIN_KEY ici : runship substitue ${VAR} par une valeur à lui,
+    # ce qui rend la clé irrécupérable. Sans variable, le serveur génère
+    # sa clé en base et la journalise à la génération.
     volumes:
       - data:/data
     restart: unless-stopped

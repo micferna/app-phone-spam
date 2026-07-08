@@ -30,9 +30,24 @@ puis appuyer sur **Activer** pour donner le rôle de filtrage d'appels.
 ```bash
 cd backend
 npm install
-ADMIN_KEY=une-cle-secrete npm start          # ou : docker compose up -d (avec .env)
-npm run add-user -- "Prénom"                 # génère la clé API d'un proche
+npm start                        # ou : docker compose up -d
 ```
+
+Puis **initialisation au premier arrivé** (une seule fois, tant que le
+serveur n'a aucun membre) :
+
+```bash
+curl -X POST http://localhost:3000/api/bootstrap \
+  -H 'Content-Type: application/json' -d '{"name":"TonPrénom"}'
+```
+
+La réponse contient ta clé perso (`apiKey`) **et la clé admin
+(`adminKey`), affichée cette unique fois** — seule son empreinte SHA-256
+est conservée en base, elle n'apparaît jamais dans les logs. L'endpoint
+renvoie ensuite 403 pour toujours. Les proches suivants : `npm run
+add-user -- "Prénom"` en local, ou `POST /api/users` avec le header
+`X-Admin-Key`. (Une variable d'environnement `ADMIN_KEY` reste
+prioritaire si tu préfères la fournir toi-même.)
 
 ## API (header `X-Api-Key` obligatoire)
 

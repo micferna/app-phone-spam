@@ -7,8 +7,7 @@
   "scripts": {
     "start": "node src/server.js",
     "add-user": "node scripts/add-user.js",
-    "update-lists": "node scripts/update-lists.js",
-    "print-admin-key": "node scripts/print-admin-key.js"
+    "update-lists": "node scripts/update-lists.js"
   },
   "dependencies": {
     "better-sqlite3": "^11.10.0",
