@@ -77,7 +77,7 @@ class SetupScreen extends StatefulWidget {
 
 class _SetupScreenState extends State<SetupScreen> {
   final _url =
-      TextEditingController(text: 'https://phone-spam-api.runship.fr');
+      TextEditingController(text: 'https://antispam-85e4a1d2.runship.fr');
   final _key = TextEditingController();
   String? _error;
   bool _busy = false;

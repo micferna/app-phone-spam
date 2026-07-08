@@ -7,7 +7,7 @@ l'app affiche « ⚠️ Signalé par N personnes » et laisse le choix de décro
 ## Architecture
 
 - **`backend/`** — API Node.js + SQLite auto-hébergée (Docker). ✅
-  Déployée sur https://phone-spam-api.runship.fr
+  Déployée sur https://antispam-85e4a1d2.runship.fr (stack runship)
 - **`app/`** — App mobile Flutter. Android fait ✅, iOS à venir.
   - Android : `SpamScreeningService` (rôle `ROLE_CALL_SCREENING`, Android 10+)
     interroge l'API à chaque appel entrant. Numéro suspect → alerte

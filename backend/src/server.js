@@ -22,8 +22,16 @@ function resolveAdminKey() {
   if (!row) {
     row = { value: crypto.randomBytes(24).toString('hex') };
     db.prepare("INSERT INTO meta (key, value) VALUES ('admin_key', ?)").run(row.value);
+    // Log différé : certains hébergeurs n'attachent la capture de logs
+    // qu'après le démarrage du conteneur et perdent les premières lignes.
+    setTimeout(() => {
+      console.log(`Clé admin générée (conservée en base) : ${row.value}`);
+    }, 5000);
+  } else {
+    // Jamais la clé complète sur le chemin de réutilisation : empreinte
+    // seulement. Récupération : npm run print-admin-key (accès local).
+    console.log(`Clé admin en base (commence par ${row.value.slice(0, 6)}…)`);
   }
-  console.log(`Clé admin (pas d'ADMIN_KEY en env, clé conservée en base) : ${row.value}`);
   return row.value;
 }
 const ADMIN_KEY = resolveAdminKey();
