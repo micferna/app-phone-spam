@@ -38,6 +38,13 @@ le téléphone interroge l'API et décide quoi faire. Sur iOS, l'API Apple
 n'autorise pas le lookup en direct — il faudra précharger la liste via une
 extension CallKit synchronisée sur `/api/numbers`.
 
+> **⚠️ L'app n'est pas un dialer.** Elle ne remplace pas l'écran d'appel
+> de ton téléphone (qui s'affiche normalement) : elle agit en arrière-plan
+> comme « application d'identification des appels et des spams ». Son effet
+> dépend du mode (voir plus bas) — et seul le mode **Bloquer** rejette
+> réellement l'appel. Un numéro normal ne produit rien de visible :
+> c'est attendu.
+
 ## L'app Android
 
 ### Compiler l'APK
@@ -142,6 +149,17 @@ Un numéro est marqué `suspicious` s'il est signalé par le groupe, présent
 dans une liste publique importée, **ou** dans les préfixes ARCEP réservés au
 démarchage (décision 2022-1583 : 0162, 0163, 0270, 0271, 0377, 0378, 0424,
 0425, 0568, 0569, 0948, 0949 — détection intégrée, aucun import nécessaire).
+
+### Identification de l'opérateur (open data ARCEP MAJNUM)
+
+Le lookup renvoie aussi l'**opérateur attributaire** du numéro
+(`operator` = mnémonique ARCEP, `operatorName` = libellé si connu), via le
+fichier public [MAJNUM](https://www.data.gouv.fr/datasets/ressources-en-numerotation-telephonique)
+(~21 600 tranches, rechargé toutes les 24 h). Ça enrichit la notification
+(« opérateur : Oxilog ») et révèle les patterns : le démarchage se
+concentre sur une poignée de grossistes VoIP (Oxilog, Ubicentrex,
+Manifone, IP Directions…). `GET /api/status` indique le nombre de tranches
+chargées.
 
 ## Listes publiques auto-actualisées
 

@@ -95,10 +95,14 @@ class SpamScreeningService : CallScreeningService() {
         val label = json.optString("importedLabel", "")
         val arcep = json.optBoolean("arcepDemarchage")
 
+        val operatorName = if (json.isNull("operatorName")) "" else json.optString("operatorName", "")
+        val operator = if (json.isNull("operator")) "" else json.optString("operator", "")
         val reason = buildList {
             if (count > 0) add("signalé par $count personne${if (count > 1) "s" else ""} du groupe")
             if (arcep) add("préfixe officiel de démarchage (ARCEP)")
             if (label.isNotEmpty() && !arcep) add(label)
+            val op = if (operatorName.isNotEmpty()) operatorName else operator
+            if (op.isNotEmpty()) add("opérateur : $op")
         }.joinToString(" · ")
 
         val title = when (mode) {

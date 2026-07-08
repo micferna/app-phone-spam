@@ -4,6 +4,7 @@ import { rateLimit } from 'express-rate-limit';
 import { db } from './db.js';
 import { normalizeNumber, isArcepDemarchage } from './normalize.js';
 import { updateLists } from './update-lists.js';
+import { operatorFor, refreshOperators, operatorsLoaded } from './operators.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -317,6 +318,7 @@ app.get('/api/lookup/:number', auth, (req, res) => {
     db.prepare('SELECT source, label FROM imported_numbers WHERE number = ?').get(number) ||
     db.prepare("SELECT source, label FROM imported_prefixes WHERE ? LIKE prefix || '%'").get(number);
   const arcep = isArcepDemarchage(number);
+  const operator = operatorFor(number);
   res.json({
     number,
     reportCount: reports.c,
@@ -324,6 +326,8 @@ app.get('/api/lookup/:number', auth, (req, res) => {
     importedFrom: imported?.source ?? null,
     importedLabel: imported?.label ?? null,
     arcepDemarchage: arcep,
+    operator: operator?.mnemo ?? null,
+    operatorName: operator?.name ?? null,
     suspicious: reports.c > 0 || !!imported || arcep,
   });
 });
@@ -476,20 +480,31 @@ app.post('/api/update-lists', adminAuth, async (_req, res) => {
   res.json(await updateLists());
 });
 
-// Mise à jour automatique des listes publiques (spamtel, begone-fr…) :
-// au démarrage puis toutes les 24 h. Désactivable avec UPDATE_LISTS=0.
+// Mise à jour automatique des données publiques (listes spamtel/begone-fr
+// + annuaire opérateurs ARCEP MAJNUM) : au démarrage puis toutes les 24 h.
+// Désactivable avec UPDATE_LISTS=0.
 async function refreshLists() {
   const results = await updateLists();
   for (const r of results) {
     if (r.error) console.warn(`Liste "${r.source}" : échec (${r.error})`);
     else console.log(`Liste "${r.source}" : ${r.prefixes} préfixes, ${r.numbers} numéros`);
   }
+  try {
+    const n = await refreshOperators();
+    console.log(`Annuaire opérateurs ARCEP : ${n} tranches chargées`);
+  } catch (e) {
+    console.warn('Annuaire opérateurs ARCEP indisponible :', e.message);
+  }
 }
+
+app.get('/api/status', (_req, res) =>
+  res.json({ ok: true, operatorsLoaded: operatorsLoaded() })
+);
 
 app.listen(PORT, () => {
   console.log(`Backend anti-spam démarré sur le port ${PORT}`);
   if (process.env.UPDATE_LISTS !== '0') {
-    refreshLists().catch((e) => console.warn('Mise à jour des listes impossible :', e.message));
+    refreshLists().catch((e) => console.warn('Mise à jour des données impossible :', e.message));
     setInterval(() => refreshLists().catch(() => {}), 24 * 60 * 60 * 1000);
   }
 });
