@@ -2,7 +2,11 @@
 # construit le backend qui vit dans backend/).
 services:
   api:
-    build: .
+    # Syntaxe explicite requise : le déploiement blue-green de runship
+    # perd le contexte avec la forme courte `build: .`
+    build:
+      context: .
+      dockerfile: Dockerfile
     ports:
       - "3000:3000"
     environment:
