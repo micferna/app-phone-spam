@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends python3 make g+
 COPY backend/src ./src
 COPY backend/scripts ./scripts
 COPY backend/sources.json ./sources.json
+ENV NODE_ENV=production
 ENV DB_PATH=/data/spam.db
 VOLUME /data
 EXPOSE 3000

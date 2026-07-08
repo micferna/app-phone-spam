@@ -16,7 +16,10 @@ function normalizePrefix(raw) {
   let p = raw.replace(/[\s.\-]/g, '');
   if (p.startsWith('00')) p = '+' + p.slice(2);
   if (/^0[1-9]\d*$/.test(p)) p = '+33' + p.slice(1);
-  return /^\+\d{3,14}$/.test(p) ? p : null;
+  // Minimum 6 caractères (+33 + 2 chiffres) : une source compromise qui
+  // publierait un préfixe ultra-court (ex : "+3") marquerait sinon tous
+  // les numéros comme spam.
+  return /^\+\d{5,14}$/.test(p) ? p : null;
 }
 
 // Format spamtel : une ligne = "0162*,Label" (préfixe) ou "0612345678,Label".

@@ -5,38 +5,106 @@ import { normalizeNumber, isArcepDemarchage } from './normalize.js';
 import { updateLists } from './update-lists.js';
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '8kb' }));
+
+// En-têtes de sécurité (page d'accueil incluse ; le CSP n'autorise que
+// le style inline de la page, aucun script).
+app.use((_req, res, next) => {
+  res.set({
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
+    'Content-Security-Policy':
+      "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+  });
+  next();
+});
 
 const PORT = process.env.PORT || 3000;
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
+
+const safeEqual = (a, b) => {
+  const ab = Buffer.from(String(a));
+  const bb = Buffer.from(String(b));
+  return ab.length === bb.length && crypto.timingSafeEqual(ab, bb);
+};
+
+// IP client : derrière Cloudflare, CF-Connecting-IP est posé par l'edge
+// et non falsifiable à travers lui (contrairement à X-Forwarded-For).
+const clientIp = (req) =>
+  req.get('cf-connecting-ip') || req.socket.remoteAddress || 'inconnu';
+
+// --- Limitation de débit en mémoire (anti-bots / anti-bruteforce) ---
+const buckets = new Map();
+function hit(key, windowMs, max) {
+  const now = Date.now();
+  let b = buckets.get(key);
+  if (!b || b.reset < now) {
+    b = { count: 0, reset: now + windowMs };
+    buckets.set(key, b);
+  }
+  b.count += 1;
+  return b.count <= max;
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, b] of buckets) if (b.reset < now) buckets.delete(k);
+}, 60_000).unref();
+
+const rateLimit = (name, windowMs, max) => (req, res, next) => {
+  if (!hit(`${name}:${clientIp(req)}`, windowMs, max)) {
+    return res.status(429).json({ error: 'Trop de requêtes, réessaie plus tard' });
+  }
+  next();
+};
+
+// Limite globale grossière, puis limites serrées sur les routes sensibles.
+app.use(rateLimit('global', 60_000, 240));
 
 // Clé admin : ADMIN_KEY d'environnement si fournie, sinon celle créée à
 // l'initialisation (/api/bootstrap) — seule son empreinte SHA-256 est en
 // base, la clé en clair n'est jamais stockée ni journalisée.
 function isAdminKeyValid(provided) {
   if (!provided) return false;
-  if (process.env.ADMIN_KEY) return provided === process.env.ADMIN_KEY;
+  if (process.env.ADMIN_KEY) return safeEqual(provided, process.env.ADMIN_KEY);
   const row = db
     .prepare("SELECT value FROM meta WHERE key = 'admin_key_hash'")
     .get();
-  return !!row && sha256(provided) === row.value;
+  return !!row && safeEqual(sha256(provided), row.value);
+}
+
+// Anti-bruteforce : au-delà de 20 clés invalides en 10 min, l'IP est
+// bloquée sur les routes authentifiées jusqu'à expiration de la fenêtre.
+function authFailed(req, res, message) {
+  hit(`authfail:${clientIp(req)}`, 600_000, 20);
+  return res.status(401).json({ error: message });
+}
+function tooManyAuthFails(req) {
+  const b = buckets.get(`authfail:${clientIp(req)}`);
+  return !!b && b.reset > Date.now() && b.count >= 20;
 }
 
 // --- Auth : chaque proche a sa clé personnelle (header X-Api-Key) ---
 function auth(req, res, next) {
+  if (tooManyAuthFails(req)) {
+    return res.status(429).json({ error: 'Trop de tentatives, réessaie plus tard' });
+  }
   const key = req.get('X-Api-Key');
   const user = key
     ? db.prepare('SELECT id, name FROM users WHERE api_key = ?').get(key)
     : null;
-  if (!user) return res.status(401).json({ error: 'Clé API invalide' });
+  if (!user) return authFailed(req, res, 'Clé API invalide');
   req.user = user;
   next();
 }
 
 function adminAuth(req, res, next) {
+  if (tooManyAuthFails(req)) {
+    return res.status(429).json({ error: 'Trop de tentatives, réessaie plus tard' });
+  }
   if (!isAdminKeyValid(req.get('X-Admin-Key'))) {
-    return res.status(401).json({ error: 'Clé admin invalide' });
+    return authFailed(req, res, 'Clé admin invalide');
   }
   next();
 }
@@ -130,10 +198,12 @@ n'importe quel groupe (famille, amis, asso).</p>
 });
 
 // --- Signaler un numéro ---
-app.post('/api/reports', auth, (req, res) => {
+app.post('/api/reports', rateLimit('report', 3_600_000, 60), auth, (req, res) => {
   const number = normalizeNumber(req.body?.number);
   if (!number) return res.status(400).json({ error: 'Numéro invalide' });
-  const { category = null, comment = null } = req.body;
+  let { category = null, comment = null } = req.body;
+  if (category != null) category = String(category).slice(0, 32);
+  if (comment != null) comment = String(comment).slice(0, 500);
   db.prepare(
     `INSERT INTO reports (user_id, number, category, comment) VALUES (?, ?, ?, ?)
      ON CONFLICT (user_id, number) DO UPDATE SET category = excluded.category, comment = excluded.comment`
@@ -196,10 +266,10 @@ app.get('/api/numbers', auth, (_req, res) => {
 // --- Initialisation « premier arrivé » : crée le fondateur + la clé admin.
 // Ouvert uniquement tant qu'aucun utilisateur n'existe, puis verrouillé
 // à jamais. La clé admin n'apparaît que dans cette unique réponse HTTP.
-app.post('/api/bootstrap', (req, res) => {
+app.post('/api/bootstrap', rateLimit('bootstrap', 3_600_000, 5), (req, res) => {
   const count = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
   if (count > 0) return res.status(403).json({ error: 'Serveur déjà initialisé' });
-  const name = (req.body?.name || '').trim();
+  const name = (req.body?.name || '').trim().slice(0, 64);
   if (!name) return res.status(400).json({ error: 'Nom requis' });
   const apiKey = crypto.randomBytes(24).toString('hex');
   db.prepare('INSERT INTO users (name, api_key) VALUES (?, ?)').run(name, apiKey);
@@ -220,7 +290,7 @@ app.post('/api/bootstrap', (req, res) => {
 
 // --- Admin : créer un utilisateur (proche) et sa clé ---
 app.post('/api/users', adminAuth, (req, res) => {
-  const name = (req.body?.name || '').trim();
+  const name = (req.body?.name || '').trim().slice(0, 64);
   if (!name) return res.status(400).json({ error: 'Nom requis' });
   const apiKey = crypto.randomBytes(24).toString('hex');
   try {
