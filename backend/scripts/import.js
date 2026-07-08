@@ -35,7 +35,7 @@ const importAll = db.transaction(() => {
     if (!line || line.startsWith('#')) continue;
     if (line.endsWith('*')) {
       // Préfixe : normalisation légère (0162 -> +33162)
-      let p = line.slice(0, -1).replace(/[\s.\-]/g, '');
+      let p = line.slice(0, -1).replace(/[\s.-]/g, '');
       if (p.startsWith('00')) p = '+' + p.slice(2);
       if (/^0[1-9]\d*$/.test(p)) p = '+33' + p.slice(1);
       if (!/^\+\d{3,14}$/.test(p)) { skipped++; continue; }

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Exclut les préférences (dont la clé API) des sauvegardes cloud et des
+     transferts d'appareil à appareil. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="." />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="." />
+    </device-transfer>
+</data-extraction-rules>

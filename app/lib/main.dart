@@ -88,6 +88,13 @@ class _SetupScreenState extends State<SetupScreen> {
       _error = null;
     });
     final url = _url.text.trim().replaceAll(RegExp(r'/+$'), '');
+    if (!url.startsWith('https://')) {
+      setState(() {
+        _error = 'L\'adresse doit commencer par https:// (connexion chiffrée).';
+        _busy = false;
+      });
+      return;
+    }
     final api = ApiClient(url, _key.text.trim());
     try {
       if (!await api.checkAuth()) {

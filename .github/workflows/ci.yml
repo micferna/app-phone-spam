@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (lint · test · audit)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      - name: Lint (bonnes pratiques)
+        run: npm run lint
+      - name: Tests unitaires
+        run: npm test
+      - name: Audit des vulnérabilités (échoue si CVE haute/critique)
+        run: npm audit --audit-level=high
+
+  app:
+    name: App Flutter (analyze · test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - name: Analyse statique
+        run: flutter analyze
+      - name: Tests
+        run: flutter test

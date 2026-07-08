@@ -13,7 +13,7 @@ const SOURCES_PATH =
   join(dirname(fileURLToPath(import.meta.url)), '..', 'sources.json');
 
 function normalizePrefix(raw) {
-  let p = raw.replace(/[\s.\-]/g, '');
+  let p = raw.replace(/[\s.-]/g, '');
   if (p.startsWith('00')) p = '+' + p.slice(2);
   if (/^0[1-9]\d*$/.test(p)) p = '+33' + p.slice(1);
   // Minimum 6 caractères (+33 + 2 chiffres) : une source compromise qui
@@ -81,7 +81,15 @@ export async function updateLists() {
     try {
       const res = await fetch(src.url, { signal: AbortSignal.timeout(30_000) });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const { prefixes, numbers } = parser(await res.text());
+      // Plafond de taille : une source compromise servant plusieurs Go ne
+      // doit pas provoquer d'OOM. On coupe au Content-Length si présent,
+      // puis on revérifie la taille réellement lue.
+      const MAX_BYTES = 5_000_000;
+      const declared = Number(res.headers.get('content-length') || 0);
+      if (declared > MAX_BYTES) throw new Error('source trop volumineuse');
+      const text = await res.text();
+      if (text.length > MAX_BYTES) throw new Error('source trop volumineuse');
+      const { prefixes, numbers } = parser(text);
       if (prefixes.length === 0 && numbers.length === 0) {
         // Une source qui renvoie zéro entrée est probablement cassée :
         // on garde les données précédentes plutôt que de tout effacer.

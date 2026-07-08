@@ -5,6 +5,7 @@ import { normalizeNumber, isArcepDemarchage } from './normalize.js';
 import { updateLists } from './update-lists.js';
 
 const app = express();
+app.disable('x-powered-by');
 app.use(express.json({ limit: '8kb' }));
 app.use(express.urlencoded({ extended: false, limit: '8kb' }));
 
@@ -60,11 +61,19 @@ const clientIp = (req) =>
   req.get('cf-connecting-ip') || req.socket.remoteAddress || 'inconnu';
 
 // --- Limitation de débit en mémoire (anti-bots / anti-bruteforce) ---
+// La Map est bornée : un flood d'IP distinctes (y compris via en-tête
+// CF-Connecting-IP falsifié) ne peut pas faire enfler la mémoire jusqu'à
+// l'OOM — au-delà du plafond on purge les expirés puis on refuse.
 const buckets = new Map();
+const MAX_BUCKETS = 50_000;
 function hit(key, windowMs, max) {
   const now = Date.now();
   let b = buckets.get(key);
   if (!b || b.reset < now) {
+    if (!b && buckets.size >= MAX_BUCKETS) {
+      for (const [k, v] of buckets) if (v.reset < now) buckets.delete(k);
+      if (buckets.size >= MAX_BUCKETS) return false; // fail-closed borné
+    }
     b = { count: 0, reset: now + windowMs };
     buckets.set(key, b);
   }
@@ -262,7 +271,7 @@ n'importe quel groupe (famille, amis, asso).</p>
 });
 
 // --- Signaler un numéro ---
-app.post('/api/reports', rateLimit('report', 3_600_000, 60), auth, (req, res) => {
+app.post('/api/reports', auth, rateLimit('report', 3_600_000, 60), (req, res) => {
   const number = normalizeNumber(req.body?.number);
   if (!number) return res.status(400).json({ error: 'Numéro invalide' });
   let { category = null, comment = null } = req.body;
@@ -328,9 +337,20 @@ app.get('/api/numbers', auth, (_req, res) => {
 });
 
 // --- Initialisation « premier arrivé » : crée le fondateur + la clé admin.
-// Ouvert uniquement tant qu'aucun utilisateur n'existe, puis verrouillé
-// à jamais. La clé admin n'apparaît que dans cette unique réponse HTTP.
+// Protégé par un secret de déploiement (BOOTSTRAP_TOKEN) : sinon, un
+// scanner pourrait gagner la course entre le démarrage et l'init légitime,
+// ou re-revendiquer le serveur après une réinitialisation du volume (table
+// users vidée). Sans ce token en environnement, bootstrap est désactivé.
+// Une fois un membre créé, l'endpoint est verrouillé définitivement.
 app.post('/api/bootstrap', rateLimit('bootstrap', 3_600_000, 5), (req, res) => {
+  if (
+    !process.env.BOOTSTRAP_TOKEN ||
+    !safeEqual(req.get('x-bootstrap-token') || '', process.env.BOOTSTRAP_TOKEN)
+  ) {
+    return res.status(403).json({
+      error: 'Bootstrap désactivé : définir BOOTSTRAP_TOKEN et fournir le header X-Bootstrap-Token',
+    });
+  }
   const count = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
   if (count > 0) return res.status(403).json({ error: 'Serveur déjà initialisé' });
   const name = (req.body?.name || '').trim().slice(0, 64);
