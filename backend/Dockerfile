@@ -1,7 +1,10 @@
 FROM node:24-slim
 WORKDIR /app
 COPY package*.json ./
-RUN npm install --omit=dev
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
+ && npm install --omit=dev \
+ && apt-get purge -y python3 make g++ && apt-get autoremove -y \
+ && rm -rf /var/lib/apt/lists/*
 COPY src ./src
 COPY scripts ./scripts
 COPY sources.json ./sources.json
