@@ -6,10 +6,24 @@ l'app affiche « ⚠️ Signalé par N personnes » et laisse le choix de décro
 
 ## Architecture
 
-- **`backend/`** — API Node.js + SQLite auto-hébergée (Docker). Fait. ✅
-- **`app/`** — App mobile Flutter (Android + iOS). À venir.
-  - Android : `CallScreeningService` → lookup temps réel sur l'API.
-  - iOS : extension CallKit → liste synchronisée depuis `/api/numbers`.
+- **`backend/`** — API Node.js + SQLite auto-hébergée (Docker). ✅
+  Déployée sur https://phone-spam-api.runship.fr
+- **`app/`** — App mobile Flutter. Android fait ✅, iOS à venir.
+  - Android : `SpamScreeningService` (rôle `ROLE_CALL_SCREENING`, Android 10+)
+    interroge l'API à chaque appel entrant. Numéro suspect → alerte
+    « ⚠️ Signalé par N personnes » ; numéro inconnu → notification discrète
+    avec bouton **Signaler comme spam** qui prévient tout le groupe.
+  - iOS : extension CallKit → liste synchronisée depuis `/api/numbers` (à venir).
+
+### Compiler l'app Android
+
+```bash
+cd app && flutter build apk --release
+# APK : app/build/app/outputs/flutter-apk/app-release.apk
+```
+
+Au premier lancement, renseigner l'URL du serveur et sa clé API personnelle,
+puis appuyer sur **Activer** pour donner le rôle de filtrage d'appels.
 
 ## Démarrer le backend
 
