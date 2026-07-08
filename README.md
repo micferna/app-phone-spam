@@ -28,7 +28,7 @@ auto-hébergeable.
 
 | Composant | Techno | État |
 |---|---|---|
-| `backend/` | Node.js (Express) + SQLite, Docker | ✅ en ligne : https://antispam-83384cb3.runship.fr |
+| `backend/` | Node.js (Express) + SQLite, Docker | ✅ en ligne : https://antispam-77bf443d.runship.fr |
 | `app/` (Android) | Flutter + Kotlin natif | ✅ APK compilable |
 | `app/` (iOS) | Flutter + extension CallKit | ⏳ à venir (nécessite un Mac + compte Apple) |
 
