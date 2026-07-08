@@ -325,7 +325,7 @@ class _HomeScreenState extends State<HomeScreen> {
         index: _tab,
         children: [
           _protectionTab(scheme),
-          const HistoryTab(),
+          HistoryTab(api: widget.api),
         ],
       ),
     );
@@ -448,7 +448,9 @@ class _HomeScreenState extends State<HomeScreen> {
 // Onglet Historique : journal des appels screenés (lu depuis le natif)
 // ---------------------------------------------------------------------------
 class HistoryTab extends StatefulWidget {
-  const HistoryTab({super.key});
+  final ApiClient api;
+
+  const HistoryTab({super.key, required this.api});
 
   @override
   State<HistoryTab> createState() => _HistoryTabState();
@@ -484,6 +486,19 @@ class _HistoryTabState extends State<HistoryTab> {
       await _native.invokeMethod('clearHistory');
     } catch (_) {}
     _load();
+  }
+
+  Future<void> _sendFeedback(String number, bool wasSpam) async {
+    try {
+      await widget.api.feedback(number, wasSpam);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(wasSpam
+              ? 'Merci — confirmé comme spam.'
+              : 'Merci — marqué comme légitime, le score baissera.'),
+        ));
+      }
+    } catch (_) {}
   }
 
   ({IconData icon, Color color, String label}) _style(
@@ -559,15 +574,33 @@ class _HistoryTabState extends State<HistoryTab> {
           final e = entries[i - 1];
           final st = _style('${e['kind'] ?? 'call'}', '${e['verdict']}', '${e['action']}');
           final op = '${e['operator'] ?? ''}';
+          final number = '${e['number']}';
+          final isSuspect = '${e['verdict']}' == 'suspect';
           return ListTile(
             leading: Icon(st.icon, color: st.color),
-            title: Text('${e['number']}'),
+            title: Text(number),
             subtitle: Text([
               st.label,
               if (op.isNotEmpty) 'opérateur : $op',
+              _time((e['ts'] as num).toInt()),
             ].join(' · ')),
-            trailing: Text(_time((e['ts'] as num).toInt()),
-                style: Theme.of(context).textTheme.bodySmall),
+            trailing: isSuspect
+                ? Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.thumb_up_alt_outlined, size: 20),
+                        tooltip: 'C\'était bien du spam',
+                        onPressed: () => _sendFeedback(number, true),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.thumb_down_alt_outlined, size: 20),
+                        tooltip: 'Faux positif (pas du spam)',
+                        onPressed: () => _sendFeedback(number, false),
+                      ),
+                    ],
+                  )
+                : null,
           );
         },
       ),

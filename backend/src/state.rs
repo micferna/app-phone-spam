@@ -26,6 +26,8 @@ pub struct AppState {
     /// Cache de la réputation par opérateur (mnémo -> nb de numéros signalés).
     pub rep: Arc<Mutex<HashMap<String, i64>>>,
     pub rep_dirty: Arc<AtomicBool>,
+    /// Serveurs pairs dont on importe le flux (fédération), via FEDERATION_PEERS.
+    pub federation_peers: Vec<String>,
 }
 
 impl AppState {

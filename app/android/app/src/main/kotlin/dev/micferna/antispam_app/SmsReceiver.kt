@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.provider.Telephony
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -61,7 +62,7 @@ class SmsReceiver : BroadcastReceiver() {
                             }
                         }
                     }.ifEmpty { "signaux d'arnaque détectés" }
-                    notifySms(context, sender, reasonText, json.optBoolean("canReport"))
+                    notifySms(context, sender, body, reasonText, json.optBoolean("canReport"))
                     History.log(context, "sms", sender, "suspect", "SMS suspect", "")
                 }
             } catch (_: Exception) {
@@ -72,11 +73,18 @@ class SmsReceiver : BroadcastReceiver() {
         }
     }
 
-    private fun notifySms(context: Context, sender: String, reason: String, canReport: Boolean) {
+    private fun notifySms(
+        context: Context,
+        sender: String,
+        body: String,
+        reason: String,
+        canReport: Boolean,
+    ) {
         val nm = context.getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_SMS, "SMS suspects", NotificationManager.IMPORTANCE_HIGH)
         )
+        val id = sender.hashCode()
         val builder = Notification.Builder(context, CHANNEL_SMS)
             .setSmallIcon(android.R.drawable.stat_sys_warning)
             .setContentTitle("⚠️ SMS suspect de $sender")
@@ -85,7 +93,6 @@ class SmsReceiver : BroadcastReceiver() {
             .setAutoCancel(true)
 
         if (canReport) {
-            val id = sender.hashCode()
             val intent = Intent(context, ReportReceiver::class.java)
                 .setAction(ReportReceiver.ACTION_REPORT)
                 .putExtra(ReportReceiver.EXTRA_NUMBER, sender)
@@ -96,6 +103,21 @@ class SmsReceiver : BroadcastReceiver() {
             )
             builder.addAction(
                 Notification.Action.Builder(null, "Signaler l'expéditeur", pi).build()
+            )
+        }
+
+        // Aide au signalement officiel : ouvre l'app SMS pré-remplie vers le
+        // 33700 (plateforme nationale anti-spam) avec le message frauduleux.
+        val forward = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:33700"))
+            .putExtra("sms_body", body)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (forward.resolveActivity(context.packageManager) != null) {
+            val fpi = PendingIntent.getActivity(
+                context, id + 1, forward,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+            builder.addAction(
+                Notification.Action.Builder(null, "Transférer au 33700", fpi).build()
             )
         }
         nm.notify("sms".hashCode() + sender.hashCode(), builder.build())

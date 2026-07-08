@@ -65,8 +65,20 @@ pub async fn init_pool(db_path: &str) -> Result<SqlitePool, sqlx::Error> {
               ip TEXT,
               created_at TEXT NOT NULL DEFAULT (datetime('now'))
            )"#,
+        // Retour utilisateur « était-ce du spam ? » (1 = spam, 0 = légitime)
+        // pour affiner le score et réduire les faux positifs.
+        r#"CREATE TABLE IF NOT EXISTS feedback (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              user_id INTEGER NOT NULL,
+              number TEXT NOT NULL,
+              was_spam INTEGER NOT NULL,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              UNIQUE (user_id, number)
+           )"#,
         "CREATE INDEX IF NOT EXISTS idx_reports_number ON reports(number)",
+        "CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_join_status ON join_requests(status)",
+        "CREATE INDEX IF NOT EXISTS idx_feedback_number ON feedback(number)",
     ] {
         sqlx::query(stmt).execute(&pool).await?;
     }

@@ -175,12 +175,31 @@ Les routes admin exigent `X-Admin-Key`.
 | `POST /api/reports/bulk` `{numbers[], label?}` | admin | Import en masse (sans rate-limit) |
 | `GET /api/operators` | membre | Réputation par opérateur (quels grossistes concentrent le spam) |
 | `POST /api/check-sms` `{sender, text}` | membre | Analyse anti-smishing d'un SMS |
+| `POST /api/feedback` `{number, wasSpam}` | membre | Retour « était-ce du spam ? » (affine le score) |
+| `GET /api/federation/feed` | public | Flux des numéros confirmés (≥2 membres), pour la fédération |
+| `GET /api/stats` | admin | Statistiques (dashboard) |
+| `GET`·`POST /admin` | admin | Dashboard web (auth par clé) |
 | `POST /api/update-lists` | admin | Forcer la mise à jour des listes publiques |
 
 Un numéro est marqué `suspicious` s'il est signalé par le groupe, présent
 dans une liste publique importée, **ou** dans les préfixes ARCEP réservés au
 démarchage (décision 2022-1583 : 0162, 0163, 0270, 0271, 0377, 0378, 0424,
 0425, 0568, 0569, 0948, 0949 — détection intégrée, aucun import nécessaire).
+
+### Fonctionnalités avancées
+
+- **Score de confiance** (`suspicionScore` 0-100) combinant signalements,
+  ARCEP, listes, réputation opérateur et **détection de campagne** (pic de
+  signalements sur une plage dans les dernières 24 h → `campaignActive`).
+- **Feedback utilisateur** : « était-ce du spam ? » tempère le score et réduit
+  les faux positifs.
+- **Fédération** : un serveur expose `/api/federation/feed` (numéros confirmés
+  par ≥ 2 membres, anonymisé) ; via `FEDERATION_PEERS` (env, URLs séparées par
+  des virgules) un serveur importe le flux de ses pairs → effet réseau.
+- **Dashboard admin** (`/admin`, clé admin) : KPIs, campagnes actives, top
+  opérateurs, signalements récents, feedback.
+- **Aide au 33700** : l'app propose de transférer un SMS suspect à la
+  plateforme nationale (33700).
 
 ### Identification de l'opérateur (open data ARCEP MAJNUM)
 

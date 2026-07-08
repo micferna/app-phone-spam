@@ -1,5 +1,6 @@
 //! Backend anti-spam communautaire — Rust (axum + SQLite).
 
+mod federation;
 mod handlers;
 mod lists;
 mod normalize;
@@ -46,6 +47,9 @@ async fn main() {
         buckets: Arc::new(Mutex::new(HashMap::new())),
         rep: Arc::new(Mutex::new(HashMap::new())),
         rep_dirty: Arc::new(AtomicBool::new(true)),
+        federation_peers: federation::parse_peers(
+            &std::env::var("FEDERATION_PEERS").unwrap_or_default(),
+        ),
     };
 
     // Rafraîchissement des données publiques : au démarrage puis toutes les 24 h.
@@ -83,8 +87,15 @@ async fn main() {
         .route("/api/numbers", get(handlers::numbers))
         .route("/api/operators", get(handlers::operators))
         .route("/api/check-sms", post(handlers::check_sms))
+        .route("/api/feedback", post(handlers::feedback))
+        .route("/api/federation/feed", get(handlers::federation_feed))
+        .route("/api/stats", get(handlers::stats))
         .route("/api/users", post(handlers::create_user))
         .route("/api/update-lists", post(handlers::update_lists))
+        .route(
+            "/admin",
+            get(handlers::admin_login).post(handlers::admin_dashboard),
+        )
         .layer(DefaultBodyLimit::max(8192))
         .layer(middleware::from_fn_with_state(st.clone(), global_rate))
         .layer(middleware::from_fn(security_headers))
@@ -119,6 +130,7 @@ async fn refresh_all(st: &AppState) {
         }
         Err(err) => eprintln!("Annuaire opérateurs ARCEP indisponible : {err}"),
     }
+    federation::pull_peers(&st.pool, &st.federation_peers).await;
 }
 
 async fn security_headers(req: Request, next: Next) -> Response {

@@ -190,6 +190,43 @@ pub async fn lookup(
         .copied()
         .unwrap_or(0);
 
+    // Détection de campagne : nb de numéros distincts de la même plage
+    // (préfixe +33 + 3 chiffres) signalés dans les dernières 24 h.
+    let prefix: String = number.chars().take(6).collect();
+    let burst: i64 = sqlx::query_scalar(
+        "SELECT COUNT(DISTINCT number) FROM reports WHERE number LIKE ? || '%' \
+         AND created_at > datetime('now','-1 day')",
+    )
+    .bind(&prefix)
+    .fetch_one(&st.pool)
+    .await
+    .unwrap_or(0);
+    // Retour des membres sur ce numéro.
+    let fb_spam: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM feedback WHERE number = ? AND was_spam = 1")
+            .bind(&number)
+            .fetch_one(&st.pool)
+            .await
+            .unwrap_or(0);
+    let fb_ok: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM feedback WHERE number = ? AND was_spam = 0")
+            .bind(&number)
+            .fetch_one(&st.pool)
+            .await
+            .unwrap_or(0);
+
+    let (score, campaign) = suspicion_score(
+        count,
+        arcep,
+        imported.is_some(),
+        op_rep,
+        burst,
+        fb_spam,
+        fb_ok,
+    );
+    // Binaire fiable (blocage) inchangé ; le score ajoute la nuance.
+    let suspicious = count > 0 || imported.is_some() || arcep;
+
     let categories: Vec<&str> = cats
         .as_deref()
         .map(|c| c.split(',').collect())
@@ -204,8 +241,43 @@ pub async fn lookup(
         "operator": op.as_ref().map(|o| &o.mnemo),
         "operatorName": op.as_ref().and_then(|o| o.name.clone()),
         "operatorReportCount": op_rep,
-        "suspicious": count > 0 || imported.is_some() || arcep,
+        "suspicionScore": score,
+        "campaignActive": campaign,
+        "suspicious": suspicious,
     }))
+}
+
+/// Score de confiance 0-100 + campagne active. Combine signalements, ARCEP,
+/// listes, réputation de l'opérateur, pic récent sur la plage (campagne),
+/// et tempère si les membres ont marqué le numéro comme légitime.
+fn suspicion_score(
+    report_count: i64,
+    arcep: bool,
+    imported: bool,
+    op_rep: i64,
+    burst: i64,
+    fb_spam: i64,
+    fb_ok: i64,
+) -> (i64, bool) {
+    let mut s = 0i64;
+    s += (report_count * 25).min(60);
+    if arcep {
+        s += 45;
+    }
+    if imported {
+        s += 40;
+    }
+    s += (op_rep * 3).min(15);
+    let campaign = burst >= 3;
+    if campaign {
+        s += 25;
+    }
+    // Feedback négatif majoritaire (plus de « pas spam » que de « spam ») :
+    // on tempère fortement pour éviter les faux positifs.
+    if fb_ok > fb_spam && fb_ok > 0 {
+        s -= 40;
+    }
+    (s.clamp(0, 100), campaign)
 }
 
 pub async fn create_report(
@@ -645,6 +717,142 @@ pub async fn reject_join(
     .await
     .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
     ok(json!({ "rejected": res.rows_affected() > 0 }))
+}
+
+// --- retour utilisateur : était-ce vraiment du spam ? ---
+pub async fn feedback(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    let (uid, _) = require_user(&st, &headers).await?;
+    let number = normalize_number(body["number"].as_str().unwrap_or(""))
+        .ok_or_else(|| e(StatusCode::BAD_REQUEST, "Numéro invalide"))?;
+    let was_spam: i64 = if body["wasSpam"].as_bool().unwrap_or(false) {
+        1
+    } else {
+        0
+    };
+    sqlx::query(
+        "INSERT INTO feedback (user_id, number, was_spam) VALUES (?, ?, ?)
+         ON CONFLICT (user_id, number) DO UPDATE SET was_spam = excluded.was_spam",
+    )
+    .bind(uid)
+    .bind(&number)
+    .bind(was_spam)
+    .execute(&st.pool)
+    .await
+    .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
+    ok(json!({ "number": number, "recorded": true }))
+}
+
+// --- fédération : flux public des numéros confirmés (≥2 membres distincts),
+// anonymisé (numéro + nb de signalements), pour qu'un autre serveur s'y abonne.
+pub async fn federation_feed(State(st): State<AppState>, headers: HeaderMap) -> ApiResult {
+    if !st.rate_ok(
+        &format!("fedfeed:{}", client_ip(&headers)),
+        Duration::from_secs(60),
+        30,
+    ) {
+        return Err(e(StatusCode::TOO_MANY_REQUESTS, "Trop de requêtes"));
+    }
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT number, COUNT(DISTINCT user_id) AS c FROM reports \
+         GROUP BY number HAVING c >= 2 ORDER BY c DESC LIMIT 5000",
+    )
+    .fetch_all(&st.pool)
+    .await
+    .unwrap_or_default();
+    ok(json!({
+        "numbers": rows.iter().map(|(n, c)| json!({"number": n, "reports": c})).collect::<Vec<_>>()
+    }))
+}
+
+// --- stats (admin) : alimente le dashboard ---
+pub async fn stats(State(st): State<AppState>, headers: HeaderMap) -> ApiResult {
+    require_admin(&st, &headers).await?;
+    ok(json!(collect_stats(&st).await))
+}
+
+async fn collect_stats(st: &AppState) -> Value {
+    let scalar = |q: &'static str| {
+        let pool = st.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(q)
+                .fetch_one(&pool)
+                .await
+                .unwrap_or(0)
+        }
+    };
+    let members = scalar("SELECT COUNT(*) FROM users").await;
+    let reported = scalar("SELECT COUNT(DISTINCT number) FROM reports").await;
+    let total_reports = scalar("SELECT COUNT(*) FROM reports").await;
+    let imported = scalar("SELECT COUNT(*) FROM imported_numbers").await;
+    let prefixes = scalar("SELECT COUNT(*) FROM imported_prefixes").await;
+    let pending = scalar("SELECT COUNT(*) FROM join_requests WHERE status = 'pending'").await;
+    let last24 =
+        scalar("SELECT COUNT(*) FROM reports WHERE created_at > datetime('now','-1 day')").await;
+    let fb_spam = scalar("SELECT COUNT(*) FROM feedback WHERE was_spam = 1").await;
+    let fb_ok = scalar("SELECT COUNT(*) FROM feedback WHERE was_spam = 0").await;
+
+    let all_numbers: Vec<String> = sqlx::query_scalar("SELECT DISTINCT number FROM reports")
+        .fetch_all(&st.pool)
+        .await
+        .unwrap_or_default();
+    let top_ops = {
+        let idx = st.operators.read().unwrap();
+        idx.reputation(&all_numbers)
+    };
+    let campaigns: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT substr(number,1,6) AS pfx, COUNT(DISTINCT number) AS c FROM reports \
+         WHERE created_at > datetime('now','-1 day') GROUP BY pfx HAVING c >= 3 ORDER BY c DESC",
+    )
+    .fetch_all(&st.pool)
+    .await
+    .unwrap_or_default();
+    let recent: Vec<(String, i64, String)> = sqlx::query_as(
+        "SELECT number, COUNT(*) AS c, MAX(created_at) AS last FROM reports \
+         GROUP BY number ORDER BY last DESC LIMIT 15",
+    )
+    .fetch_all(&st.pool)
+    .await
+    .unwrap_or_default();
+
+    json!({
+        "members": members,
+        "reportedNumbers": reported,
+        "totalReports": total_reports,
+        "importedNumbers": imported,
+        "importedPrefixes": prefixes,
+        "pendingJoinRequests": pending,
+        "reportsLast24h": last24,
+        "feedbackSpam": fb_spam,
+        "feedbackLegit": fb_ok,
+        "topOperators": top_ops.iter().take(10).map(|(m,n,c)| json!({"mnemo":m,"name":n,"count":c})).collect::<Vec<_>>(),
+        "activeCampaigns": campaigns.iter().map(|(p,c)| json!({"prefix":p,"count":c})).collect::<Vec<_>>(),
+        "recentReports": recent.iter().map(|(n,c,l)| json!({"number":n,"reportCount":c,"lastReport":l})).collect::<Vec<_>>(),
+    })
+}
+
+// --- dashboard admin (HTML, auth par clé via formulaire POST) ---
+pub async fn admin_login() -> Html<String> {
+    Html(crate::pages::admin_login_page(false))
+}
+
+pub async fn admin_dashboard(
+    State(st): State<AppState>,
+    Form(form): Form<HashMap<String, String>>,
+) -> Response {
+    let key = form.get("key").map(String::as_str).unwrap_or("");
+    if !admin_key_valid(&st, key).await {
+        return (
+            StatusCode::UNAUTHORIZED,
+            Html(crate::pages::admin_login_page(true)),
+        )
+            .into_response();
+    }
+    let s = collect_stats(&st).await;
+    Html(crate::pages::admin_dashboard_page(&s, key)).into_response()
 }
 
 // --- page d'accueil ---

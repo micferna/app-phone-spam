@@ -109,6 +109,16 @@ class ApiClient {
         .timeout(const Duration(seconds: 8));
   }
 
+  /// Retour « était-ce du spam ? » pour affiner le score et réduire les
+  /// faux positifs.
+  Future<void> feedback(String number, bool wasSpam) async {
+    await http
+        .post(_uri('/api/feedback'),
+            headers: _headers,
+            body: jsonEncode({'number': number, 'wasSpam': wasSpam}))
+        .timeout(const Duration(seconds: 8));
+  }
+
   Future<List<GroupNumber>> groupNumbers() async {
     final res = await http
         .get(_uri('/api/numbers'), headers: _headers)
