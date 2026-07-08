@@ -11,11 +11,10 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3000:3000"
-    # Pas d'ADMIN_KEY ici : runship substitue ${VAR} par une valeur à lui,
-    # ce qui rend la clé irrécupérable. La clé admin est créée par
-    # /api/bootstrap et renvoyée une seule fois (hash SHA-256 seul en base).
-    # Définir BOOTSTRAP_TOKEN via les secrets de la stack pour autoriser
-    # l'initialisation.
+    # Pas de secret d'env ici : runship ne peut injecter un secret qu'au
+    # déploiement, et on ne peut pas en attacher avant que la stack existe
+    # (+ les updates sont cassées). L'init se fait donc via /api/bootstrap
+    # « premier arrivé », lancé immédiatement après l'exposition.
     volumes:
       - data:/data
     restart: unless-stopped

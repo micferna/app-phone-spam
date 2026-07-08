@@ -344,18 +344,20 @@ app.get('/api/numbers', auth, (_req, res) => {
 
 // --- Initialisation « premier arrivé » : crée le fondateur + la clé admin.
 // Protégé par un secret de déploiement (BOOTSTRAP_TOKEN) : sinon, un
-// scanner pourrait gagner la course entre le démarrage et l'init légitime,
-// ou re-revendiquer le serveur après une réinitialisation du volume (table
-// users vidée). Sans ce token en environnement, bootstrap est désactivé.
-// Une fois un membre créé, l'endpoint est verrouillé définitivement.
+// scanner pourrait gagner la course entre le démarrage et l'init légitime.
+// Deux modes :
+//  - si BOOTSTRAP_TOKEN est défini en environnement, il est EXIGÉ (header
+//    X-Bootstrap-Token) — mode durci pour les hébergeurs qui peuvent poser
+//    des variables d'env ;
+//  - sinon, mode « premier arrivé » : à revendiquer immédiatement après le
+//    déploiement (le sous-domaine aléatoire n'est pas encore public).
+// Dans tous les cas, une fois un membre créé l'endpoint est verrouillé.
 app.post('/api/bootstrap', limiter(3_600_000, 5), (req, res) => {
   if (
-    !process.env.BOOTSTRAP_TOKEN ||
+    process.env.BOOTSTRAP_TOKEN &&
     !safeEqual(req.get('x-bootstrap-token') || '', process.env.BOOTSTRAP_TOKEN)
   ) {
-    return res.status(403).json({
-      error: 'Bootstrap désactivé : définir BOOTSTRAP_TOKEN et fournir le header X-Bootstrap-Token',
-    });
+    return res.status(403).json({ error: 'Token de bootstrap invalide' });
   }
   const count = db.prepare('SELECT COUNT(*) AS c FROM users').get().c;
   if (count > 0) return res.status(403).json({ error: 'Serveur déjà initialisé' });
