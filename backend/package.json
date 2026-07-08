@@ -12,7 +12,7 @@
     "test": "node --test"
   },
   "dependencies": {
-    "better-sqlite3": "^11.10.0",
+    "better-sqlite3": "^12.11.1",
     "express": "^4.21.2"
   },
   "devDependencies": {
