@@ -10,19 +10,21 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 
 // Clé admin : celle de l'environnement si fournie, sinon générée au
-// premier démarrage et conservée dans la base (affichée une seule fois
-// dans les logs à la génération).
+// premier démarrage et conservée dans la base. Dans ce second cas elle
+// est journalisée à chaque démarrage : les logs de l'hébergeur sont le
+// seul moyen pour l'opérateur de la récupérer.
 function resolveAdminKey() {
   if (process.env.ADMIN_KEY) return process.env.ADMIN_KEY;
   db.exec(
     'CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)'
   );
-  const row = db.prepare("SELECT value FROM meta WHERE key = 'admin_key'").get();
-  if (row) return row.value;
-  const key = crypto.randomBytes(24).toString('hex');
-  db.prepare("INSERT INTO meta (key, value) VALUES ('admin_key', ?)").run(key);
-  console.log(`Clé admin générée (conservée dans la base) : ${key}`);
-  return key;
+  let row = db.prepare("SELECT value FROM meta WHERE key = 'admin_key'").get();
+  if (!row) {
+    row = { value: crypto.randomBytes(24).toString('hex') };
+    db.prepare("INSERT INTO meta (key, value) VALUES ('admin_key', ?)").run(row.value);
+  }
+  console.log(`Clé admin (pas d'ADMIN_KEY en env, clé conservée en base) : ${row.value}`);
+  return row.value;
 }
 const ADMIN_KEY = resolveAdminKey();
 
