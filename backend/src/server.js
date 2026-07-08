@@ -1,5 +1,6 @@
 import express from 'express';
 import crypto from 'node:crypto';
+import { rateLimit } from 'express-rate-limit';
 import { db } from './db.js';
 import { normalizeNumber, isArcepDemarchage } from './normalize.js';
 import { updateLists } from './update-lists.js';
@@ -60,40 +61,45 @@ const safeEqual = (a, b) => {
 const clientIp = (req) =>
   req.get('cf-connecting-ip') || req.socket.remoteAddress || 'inconnu';
 
-// --- Limitation de débit en mémoire (anti-bots / anti-bruteforce) ---
-// La Map est bornée : un flood d'IP distinctes (y compris via en-tête
-// CF-Connecting-IP falsifié) ne peut pas faire enfler la mémoire jusqu'à
-// l'OOM — au-delà du plafond on purge les expirés puis on refuse.
-const buckets = new Map();
+// --- Limitation de débit (anti-bots) via express-rate-limit ---
+const limiter = (windowMs, max) =>
+  rateLimit({
+    windowMs,
+    limit: max,
+    keyGenerator: clientIp,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    // keyGenerator personnalisé (on ne lit pas req.ip) : la validation
+    // « trust proxy » d'express-rate-limit ne s'applique pas.
+    validate: false,
+    message: { error: 'Trop de requêtes, réessaie plus tard' },
+  });
+
+// Limite globale grossière, puis limites serrées sur les routes sensibles.
+app.use(limiter(60_000, 240));
+
+// --- Compteur d'échecs d'auth pour le verrou anti-bruteforce ---
+// Petite Map bornée : un flood d'IP distinctes ne peut pas faire enfler la
+// mémoire (au-delà du plafond, purge des expirés puis on refuse).
+const authBuckets = new Map();
 const MAX_BUCKETS = 50_000;
-function hit(key, windowMs, max) {
+function bumpAuthFail(ip) {
   const now = Date.now();
-  let b = buckets.get(key);
+  let b = authBuckets.get(ip);
   if (!b || b.reset < now) {
-    if (!b && buckets.size >= MAX_BUCKETS) {
-      for (const [k, v] of buckets) if (v.reset < now) buckets.delete(k);
-      if (buckets.size >= MAX_BUCKETS) return false; // fail-closed borné
+    if (!b && authBuckets.size >= MAX_BUCKETS) {
+      for (const [k, v] of authBuckets) if (v.reset < now) authBuckets.delete(k);
+      if (authBuckets.size >= MAX_BUCKETS) return;
     }
-    b = { count: 0, reset: now + windowMs };
-    buckets.set(key, b);
+    b = { count: 0, reset: now + 600_000 };
+    authBuckets.set(ip, b);
   }
   b.count += 1;
-  return b.count <= max;
 }
 setInterval(() => {
   const now = Date.now();
-  for (const [k, b] of buckets) if (b.reset < now) buckets.delete(k);
+  for (const [k, b] of authBuckets) if (b.reset < now) authBuckets.delete(k);
 }, 60_000).unref();
-
-const rateLimit = (name, windowMs, max) => (req, res, next) => {
-  if (!hit(`${name}:${clientIp(req)}`, windowMs, max)) {
-    return res.status(429).json({ error: 'Trop de requêtes, réessaie plus tard' });
-  }
-  next();
-};
-
-// Limite globale grossière, puis limites serrées sur les routes sensibles.
-app.use(rateLimit('global', 60_000, 240));
 
 // Clé admin : ADMIN_KEY d'environnement si fournie, sinon celle créée à
 // l'initialisation (/api/bootstrap) — seule son empreinte SHA-256 est en
@@ -110,11 +116,11 @@ function isAdminKeyValid(provided) {
 // Anti-bruteforce : au-delà de 20 clés invalides en 10 min, l'IP est
 // bloquée sur les routes authentifiées jusqu'à expiration de la fenêtre.
 function authFailed(req, res, message) {
-  hit(`authfail:${clientIp(req)}`, 600_000, 20);
+  bumpAuthFail(clientIp(req));
   return res.status(401).json({ error: message });
 }
 function tooManyAuthFails(req) {
-  const b = buckets.get(`authfail:${clientIp(req)}`);
+  const b = authBuckets.get(clientIp(req));
   return !!b && b.reset > Date.now() && b.count >= 20;
 }
 
@@ -271,7 +277,7 @@ n'importe quel groupe (famille, amis, asso).</p>
 });
 
 // --- Signaler un numéro ---
-app.post('/api/reports', auth, rateLimit('report', 3_600_000, 60), (req, res) => {
+app.post('/api/reports', auth, limiter(3_600_000, 60), (req, res) => {
   const number = normalizeNumber(req.body?.number);
   if (!number) return res.status(400).json({ error: 'Numéro invalide' });
   let { category = null, comment = null } = req.body;
@@ -342,7 +348,7 @@ app.get('/api/numbers', auth, (_req, res) => {
 // ou re-revendiquer le serveur après une réinitialisation du volume (table
 // users vidée). Sans ce token en environnement, bootstrap est désactivé.
 // Une fois un membre créé, l'endpoint est verrouillé définitivement.
-app.post('/api/bootstrap', rateLimit('bootstrap', 3_600_000, 5), (req, res) => {
+app.post('/api/bootstrap', limiter(3_600_000, 5), (req, res) => {
   if (
     !process.env.BOOTSTRAP_TOKEN ||
     !safeEqual(req.get('x-bootstrap-token') || '', process.env.BOOTSTRAP_TOKEN)
@@ -374,7 +380,7 @@ app.post('/api/bootstrap', rateLimit('bootstrap', 3_600_000, 5), (req, res) => {
 
 // --- Demande d'adhésion depuis la page publique (formulaire HTML) ---
 // Ouvert à tous mais fortement limité ; l'admin approuve ensuite.
-app.post('/api/join-requests', rateLimit('join', 3_600_000, 5), (req, res) => {
+app.post('/api/join-requests', limiter(3_600_000, 5), (req, res) => {
   const name = cleanText(req.body?.name, 64);
   const contact = cleanText(req.body?.contact, 128);
   const message = cleanText(req.body?.message, 280);

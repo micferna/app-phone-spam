@@ -69,6 +69,24 @@ function parseBegoneYaml(text) {
 
 const PARSERS = { 'csv-prefix': parseCsvPrefix, 'begone-yaml': parseBegoneYaml };
 
+// Hôtes autorisés pour les sources : même si sources.json était altéré, on
+// ne peut fetch que des dépôts publics connus — pas de SSRF vers un service
+// interne (métadonnées cloud, localhost, réseau privé…).
+const ALLOWED_HOSTS = new Set([
+  'raw.githubusercontent.com',
+  'gist.githubusercontent.com',
+]);
+
+function isAllowedUrl(raw) {
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    return false;
+  }
+  return u.protocol === 'https:' && ALLOWED_HOSTS.has(u.hostname);
+}
+
 export async function updateLists() {
   const sources = JSON.parse(readFileSync(SOURCES_PATH, 'utf8'));
   const results = [];
@@ -76,6 +94,10 @@ export async function updateLists() {
     const parser = PARSERS[src.format];
     if (!parser) {
       results.push({ source: src.name, error: `format inconnu : ${src.format}` });
+      continue;
+    }
+    if (!isAllowedUrl(src.url)) {
+      results.push({ source: src.name, error: 'URL non autorisée (hôte hors allowlist)' });
       continue;
     }
     try {
