@@ -94,6 +94,12 @@ sans ouvrir l'app.
 - **Cache hors-ligne** : la liste des numéros connus est synchronisée
   localement, donc le blocage/silence reste instantané et fiable même si le
   serveur est lent ou injoignable.
+- **Détection des SMS suspects** (opt-in) : un `SmsReceiver` (permission
+  `RECEIVE_SMS`) analyse chaque SMS entrant via `/api/check-sms`
+  (vérification de l'expéditeur + heuristiques anti-smishing : liens
+  raccourcis, marques usurpées, mots-clés d'arnaque) et **alerte** si
+  suspect. Il ne peut pas *bloquer* le SMS (réservé à l'app SMS par défaut),
+  seulement prévenir. Les SMS suspects apparaissent aussi dans l'Historique.
 
 ## Le backend
 
@@ -160,6 +166,7 @@ Les routes admin exigent `X-Admin-Key`.
 | `POST /api/users` `{name}` | admin | Créer un membre directement |
 | `POST /api/reports/bulk` `{numbers[], label?}` | admin | Import en masse (sans rate-limit) |
 | `GET /api/operators` | membre | Réputation par opérateur (quels grossistes concentrent le spam) |
+| `POST /api/check-sms` `{sender, text}` | membre | Analyse anti-smishing d'un SMS |
 | `POST /api/update-lists` | admin | Forcer la mise à jour des listes publiques |
 
 Un numéro est marqué `suspicious` s'il est signalé par le groupe, présent
