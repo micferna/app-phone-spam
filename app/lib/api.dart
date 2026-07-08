@@ -11,6 +11,7 @@ const kPrefApiKey = 'api_key';
 const kPrefScreeningMode = 'screening_mode'; // alert | silence | block
 const kPrefSkipContacts = 'skip_contacts'; // bool (défaut true)
 const kPrefCachedNumbers = 'cached_numbers'; // tableau JSON pour lookup offline
+const kPrefSmsFilter = 'sms_filter'; // bool (défaut false) — détection SMS
 
 class LookupResult {
   final String number;

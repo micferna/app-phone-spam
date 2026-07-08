@@ -13,7 +13,6 @@ import android.telecom.Call
 import android.telecom.CallScreeningService
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -132,25 +131,8 @@ class SpamScreeningService : CallScreeningService() {
         return if (name.isNotEmpty()) name else if (json.isNull("operator")) "" else json.optString("operator", "")
     }
 
-    // --- Journal d'appels : une ligne JSON par appel screené, gardé dans un
-    // fichier local (200 dernières lignes) lu par l'app via MethodChannel. ---
-    @Synchronized
     private fun logHistory(number: String, verdict: String, action: String, operator: String) {
-        try {
-            val entry = JSONObject()
-                .put("number", number)
-                .put("verdict", verdict)
-                .put("action", action)
-                .put("operator", operator)
-                .put("ts", System.currentTimeMillis())
-            val file = File(filesDir, HISTORY_FILE)
-            val lines = if (file.exists()) file.readLines().toMutableList() else mutableListOf()
-            lines.add(entry.toString())
-            val trimmed = if (lines.size > 200) lines.subList(lines.size - 200, lines.size) else lines
-            file.writeText(trimmed.joinToString("\n"))
-        } catch (_: Exception) {
-            // Journal best-effort : ne jamais faire échouer le screening.
-        }
+        History.log(this, "call", number, verdict, action, operator)
     }
 
     private fun lookup(serverUrl: String, apiKey: String, number: String): JSONObject? {
@@ -283,6 +265,5 @@ class SpamScreeningService : CallScreeningService() {
     companion object {
         const val CHANNEL_ALERT = "spam_alert"
         const val CHANNEL_INFO = "unknown_call"
-        const val HISTORY_FILE = "call_history.jsonl"
     }
 }

@@ -187,6 +187,7 @@ class _HomeScreenState extends State<HomeScreen> {
   String? _listError;
   String _mode = 'alert';
   bool _skipContacts = true;
+  bool _smsFilter = false;
   int _tab = 0;
 
   static const _modeHelp = {
@@ -206,13 +207,26 @@ class _HomeScreenState extends State<HomeScreen> {
     SharedPreferences.getInstance().then((p) {
       final m = p.getString(kPrefScreeningMode);
       final sc = p.getBool(kPrefSkipContacts) ?? true;
+      final sms = p.getBool(kPrefSmsFilter) ?? false;
       if (mounted) {
         setState(() {
           if (m != null) _mode = m;
           _skipContacts = sc;
+          _smsFilter = sms;
         });
       }
     });
+  }
+
+  Future<void> _setSmsFilter(bool v) async {
+    setState(() => _smsFilter = v);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(kPrefSmsFilter, v);
+    if (v) {
+      try {
+        await _native.invokeMethod('requestSmsPermission');
+      } catch (_) {}
+    }
   }
 
   Future<void> _setMode(String mode) async {
@@ -381,6 +395,16 @@ class _HomeScreenState extends State<HomeScreen> {
                   'Un numéro enregistré dans tes contacts sonne toujours '
                   'normalement (évite les faux positifs).'),
             ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _smsFilter,
+              onChanged: _setSmsFilter,
+              title: const Text('Détecter les SMS suspects'),
+              subtitle: const Text(
+                  'Analyse les SMS entrants (arnaques, faux colis, phishing) '
+                  'et t\'alerte. Ne bloque pas le SMS (impossible sans être '
+                  'l\'app SMS par défaut).'),
+            ),
             const SizedBox(height: 16),
             Text('Numéros signalés par le groupe',
                 style: Theme.of(context).textTheme.titleMedium),
@@ -462,7 +486,11 @@ class _HistoryTabState extends State<HistoryTab> {
     _load();
   }
 
-  ({IconData icon, Color color, String label}) _style(String verdict, String action) {
+  ({IconData icon, Color color, String label}) _style(
+      String kind, String verdict, String action) {
+    if (kind == 'sms') {
+      return (icon: Icons.sms_failed, color: Colors.red, label: 'SMS suspect');
+    }
     if (action == 'bloqué') return (icon: Icons.block, color: Colors.red, label: 'Bloqué');
     if (action == 'silencié') {
       return (icon: Icons.notifications_off, color: Colors.orange, label: 'Silencié');
@@ -529,7 +557,7 @@ class _HistoryTabState extends State<HistoryTab> {
             );
           }
           final e = entries[i - 1];
-          final st = _style('${e['verdict']}', '${e['action']}');
+          final st = _style('${e['kind'] ?? 'call'}', '${e['verdict']}', '${e['action']}');
           final op = '${e['operator'] ?? ''}';
           return ListTile(
             leading: Icon(st.icon, color: st.color),

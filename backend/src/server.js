@@ -10,6 +10,7 @@ import {
   operatorsLoaded,
   operatorReputation,
 } from './operators.js';
+import { analyzeSms, isSuspiciousSms } from './sms.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -364,6 +365,46 @@ app.get('/api/operators', auth, (_req, res) => {
     .all()
     .map((r) => r.number);
   res.json({ operators: operatorReputation(numbers) });
+});
+
+// --- Analyse d'un SMS entrant (anti-smishing) ---
+// Combine la vérification de l'expéditeur (s'il est numérique) et l'analyse
+// heuristique du texte. Détection + alerte seulement (impossible de bloquer
+// un SMS sans être l'app SMS par défaut).
+app.post('/api/check-sms', auth, (req, res) => {
+  const sender = String(req.body?.sender || '').slice(0, 32);
+  const text = String(req.body?.text || '').slice(0, 1200);
+  const number = normalizeNumber(sender);
+
+  const reasons = [];
+  let senderReportCount = 0;
+  let numberSuspicious = false;
+  if (number) {
+    senderReportCount = db
+      .prepare('SELECT COUNT(*) AS c FROM reports WHERE number = ?')
+      .get(number).c;
+    const imported =
+      db.prepare('SELECT 1 FROM imported_numbers WHERE number = ?').get(number) ||
+      db.prepare("SELECT 1 FROM imported_prefixes WHERE ? LIKE prefix || '%'").get(number);
+    const arcep = isArcepDemarchage(number);
+    if (senderReportCount > 0) reasons.push(`expéditeur signalé ${senderReportCount} fois`);
+    if (arcep) reasons.push('expéditeur en plage de démarchage (ARCEP)');
+    if (imported) reasons.push('expéditeur dans une liste de spam');
+    numberSuspicious = senderReportCount > 0 || !!imported || arcep;
+  }
+
+  const analysis = analyzeSms(text);
+  reasons.push(...analysis.signals);
+  const suspicious = numberSuspicious || isSuspiciousSms(analysis);
+
+  res.json({
+    sender,
+    number,
+    suspicious,
+    senderReportCount,
+    reasons,
+    canReport: !!number,
+  });
 });
 
 // --- Liste complète pour la synchro (iOS / cache hors-ligne Android) ---

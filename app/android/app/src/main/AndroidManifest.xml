@@ -4,6 +4,7 @@
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
     <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS"/>
     <uses-permission android:name="android.permission.READ_CONTACTS"/>
+    <uses-permission android:name="android.permission.RECEIVE_SMS"/>
     <application
         android:label="Anti-Spam"
         android:name="${applicationName}"
@@ -53,6 +54,16 @@
         <receiver
             android:name=".ReportReceiver"
             android:exported="false"/>
+
+        <!-- Réception des SMS entrants (détection anti-smishing) -->
+        <receiver
+            android:name=".SmsReceiver"
+            android:exported="true"
+            android:permission="android.permission.BROADCAST_SMS">
+            <intent-filter android:priority="999">
+                <action android:name="android.provider.Telephony.SMS_RECEIVED"/>
+            </intent-filter>
+        </receiver>
 
         <!-- Écran plein écran d'alerte spam (façon Truecaller) -->
         <activity

@@ -61,12 +61,23 @@ class MainActivity : FlutterActivity() {
                         }
                         result.success(null)
                     }
+                    "requestSmsPermission" -> {
+                        if (checkSelfPermission(android.Manifest.permission.RECEIVE_SMS)
+                            != PackageManager.PERMISSION_GRANTED
+                        ) {
+                            requestPermissions(
+                                arrayOf(android.Manifest.permission.RECEIVE_SMS),
+                                REQUEST_SMS
+                            )
+                        }
+                        result.success(null)
+                    }
                     "getHistory" -> {
-                        val file = File(filesDir, SpamScreeningService.HISTORY_FILE)
+                        val file = File(filesDir, History.FILE)
                         result.success(if (file.exists()) file.readText() else "")
                     }
                     "clearHistory" -> {
-                        File(filesDir, SpamScreeningService.HISTORY_FILE).delete()
+                        File(filesDir, History.FILE).delete()
                         result.success(null)
                     }
                     else -> result.notImplemented()
@@ -79,5 +90,6 @@ class MainActivity : FlutterActivity() {
         private const val REQUEST_NOTIF = 1002
         private const val REQUEST_ANSWER = 1003
         private const val REQUEST_CONTACTS = 1004
+        private const val REQUEST_SMS = 1005
     }
 }
