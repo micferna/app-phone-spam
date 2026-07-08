@@ -110,15 +110,45 @@ class SpamScreeningService : CallScreeningService() {
             "silence" -> "🔇 Appel silencié : $number"
             else -> "⚠️ Appel suspect : $number"
         }
+        val reasonText = reason.ifEmpty { "présent dans les listes de spam" }
 
-        notify(
-            number.hashCode(),
-            channel(CHANNEL_ALERT, "Alertes spam", NotificationManager.IMPORTANCE_HIGH),
-            title,
-            reason.ifEmpty { "présent dans les listes de spam" },
-            addReportAction = count == 0,
-            number = number,
+        // Mode Alerter : l'appel sonne → on affiche l'écran plein écran
+        // (façon Truecaller) par-dessus l'appel entrant, via full-screen intent.
+        if (mode == "alert") {
+            showFullScreenAlert(number, reasonText, canReport = count == 0)
+        } else {
+            notify(
+                number.hashCode(),
+                channel(CHANNEL_ALERT, "Alertes spam", NotificationManager.IMPORTANCE_HIGH),
+                title,
+                reasonText,
+                addReportAction = count == 0,
+                number = number,
+            )
+        }
+    }
+
+    private fun showFullScreenAlert(number: String, reason: String, canReport: Boolean) {
+        val full = Intent(this, SpamAlertActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            .putExtra(SpamAlertActivity.EXTRA_NUMBER, number)
+            .putExtra(SpamAlertActivity.EXTRA_REASON, reason)
+            .putExtra(SpamAlertActivity.EXTRA_CAN_REPORT, canReport)
+        val pending = PendingIntent.getActivity(
+            this, number.hashCode(), full,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val chan = channel(CHANNEL_ALERT, "Alertes spam", NotificationManager.IMPORTANCE_HIGH)
+        val notif = Notification.Builder(this, chan)
+            .setSmallIcon(android.R.drawable.stat_sys_warning)
+            .setContentTitle("⚠️ Appel suspect : $number")
+            .setContentText(reason)
+            .setStyle(Notification.BigTextStyle().bigText(reason))
+            .setCategory(Notification.CATEGORY_CALL)
+            .setFullScreenIntent(pending, true)
+            .setAutoCancel(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(number.hashCode(), notif)
     }
 
     private fun notifyUnknown(number: String) {

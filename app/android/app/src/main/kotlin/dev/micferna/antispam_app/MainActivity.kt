@@ -38,6 +38,15 @@ class MainActivity : FlutterActivity() {
                                 REQUEST_NOTIF
                             )
                         }
+                        // Permet le bouton « Raccrocher » de l'écran d'alerte.
+                        if (checkSelfPermission(android.Manifest.permission.ANSWER_PHONE_CALLS)
+                            != PackageManager.PERMISSION_GRANTED
+                        ) {
+                            requestPermissions(
+                                arrayOf(android.Manifest.permission.ANSWER_PHONE_CALLS),
+                                REQUEST_ANSWER
+                            )
+                        }
                         result.success(null)
                     }
                     else -> result.notImplemented()
@@ -48,5 +57,6 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val REQUEST_ROLE = 1001
         private const val REQUEST_NOTIF = 1002
+        private const val REQUEST_ANSWER = 1003
     }
 }

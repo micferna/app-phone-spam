@@ -1,6 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS"/>
     <application
         android:label="Anti-Spam"
         android:name="${applicationName}"
@@ -50,6 +52,16 @@
         <receiver
             android:name=".ReportReceiver"
             android:exported="false"/>
+
+        <!-- Écran plein écran d'alerte spam (façon Truecaller) -->
+        <activity
+            android:name=".SpamAlertActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleInstance"
+            android:showOnLockScreen="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen"/>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
