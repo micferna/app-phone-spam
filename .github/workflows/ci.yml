@@ -17,10 +17,10 @@ jobs:
       run:
         working-directory: backend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v6
         with:
-          node-version: "24"
+          node-version: "26"
           cache: npm
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
@@ -38,7 +38,7 @@ jobs:
       run:
         working-directory: app
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: subosito/flutter-action@v2
         with:
           channel: stable

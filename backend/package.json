@@ -12,11 +12,11 @@
     "test": "node --test"
   },
   "dependencies": {
-    "better-sqlite3": "^11.10.0",
-    "express": "^4.21.2"
+    "better-sqlite3": "^12.11.1",
+    "express": "^5.2.1"
   },
   "devDependencies": {
-    "@eslint/js": "^9.17.0",
-    "eslint": "^9.17.0"
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.6.0"
   }
 }

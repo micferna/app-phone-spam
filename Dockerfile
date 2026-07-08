@@ -1,9 +1,9 @@
 # Dockerfile racine utilisé par runship (le backend vit dans backend/).
-FROM node:24-slim
+FROM node:26-slim
 WORKDIR /app
 COPY backend/package*.json ./
-# better-sqlite3 se compile depuis les sources sous Node 24 : outils de
-# build nécessaires le temps du npm install, puis retirés.
+# better-sqlite3 se compile depuis les sources : outils de build
+# nécessaires le temps du npm install, puis retirés.
 RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
  && npm install --omit=dev \
  && apt-get purge -y python3 make g++ && apt-get autoremove -y \
