@@ -1,5 +1,5 @@
 # Dockerfile racine utilisé par runship (le backend vit dans backend/).
-FROM node:24-slim
+FROM node:26-slim
 WORKDIR /app
 COPY backend/package*.json ./
 # better-sqlite3 se compile depuis les sources sous Node 24 : outils de
