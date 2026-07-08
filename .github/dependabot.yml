@@ -2,8 +2,8 @@
 # https://docs.github.com/code-security/dependabot
 version: 2
 updates:
-  # Dépendances du backend Node.js
-  - package-ecosystem: "npm"
+  # Dépendances du backend Rust
+  - package-ecosystem: "cargo"
     directory: "/backend"
     schedule:
       interval: "weekly"
@@ -20,13 +20,9 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 5
 
-  # Images de base Docker (Dockerfile racine + backend/)
+  # Images de base Docker (Dockerfile racine)
   - package-ecosystem: "docker"
     directory: "/"
-    schedule:
-      interval: "weekly"
-  - package-ecosystem: "docker"
-    directory: "/backend"
     schedule:
       interval: "weekly"
 

@@ -11,7 +11,6 @@ propre clé, l'accès se fait sur invitation, et le serveur est
 auto-hébergeable.
 
 ![CI](https://github.com/micferna/app-phone-spam/actions/workflows/ci.yml/badge.svg)
-![CodeQL](https://github.com/micferna/app-phone-spam/actions/workflows/codeql.yml/badge.svg)
 
 ## Sommaire
 
@@ -28,7 +27,7 @@ auto-hébergeable.
 
 | Composant | Techno | État |
 |---|---|---|
-| `backend/` | Node.js (Express) + SQLite, Docker | ✅ en ligne : https://antispam-03a9be84.runship.fr |
+| `backend/` | Rust (axum) + SQLite, Docker | ✅ en ligne : https://antispam-03a9be84.runship.fr |
 | `app/` (Android) | Flutter + Kotlin natif | ✅ APK compilable |
 | `app/` (iOS) | Flutter + extension CallKit | ⏳ à venir (nécessite un Mac + compte Apple) |
 
@@ -105,29 +104,30 @@ sans ouvrir l'app.
 
 ```bash
 cd backend
-npm install
-npm start                        # ou : docker compose up -d
+cargo run --release              # ou : docker compose up -d
 ```
 
-### Initialisation « premier arrivé »
+### Initialisation (public sérieux)
 
+L'initialisation exige un secret de déploiement `BOOTSTRAP_TOKEN` (variable
+d'environnement) pour éviter qu'un scanner ne revendique un serveur neuf.
 Une seule fois, tant que le serveur n'a aucun membre :
 
 ```bash
 curl -X POST http://localhost:3000/api/bootstrap \
+  -H 'X-Bootstrap-Token: <BOOTSTRAP_TOKEN>' \
   -H 'Content-Type: application/json' -d '{"name":"TonPrénom"}'
 ```
 
 La réponse contient ta clé perso (`apiKey`) **et la clé admin (`adminKey`),
 affichée cette unique fois** — seule son empreinte SHA-256 est conservée en
-base, elle n'apparaît jamais dans les logs. L'endpoint se verrouille ensuite
-(403 définitif). Une variable d'environnement `ADMIN_KEY` reste prioritaire
-si tu préfères fournir la clé toi-même.
+base. L'endpoint se verrouille ensuite (403 définitif). Une variable
+d'environnement `ADMIN_KEY` reste prioritaire pour l'accès admin.
 
 ### Ajouter des membres
 
-- **En local :** `npm run add-user -- "Prénom"`
 - **À distance :** `POST /api/users` avec le header `X-Admin-Key`
+- **En masse :** `POST /api/reports/bulk` avec le header `X-Admin-Key`
 - **Via demandes d'adhésion :** voir ci-dessous
 
 ## Rejoindre un groupe
@@ -187,61 +187,55 @@ chargées.
 
 ## Listes publiques auto-actualisées
 
-Les sources déclarées dans `backend/sources.json` (spamtel, begone-fr) sont
-téléchargées **au démarrage puis toutes les 24 h** : préfixes ARCEP et
-opérateurs VoIP utilisés par les spammeurs restent à jour tout seuls. Chaque
-rafraîchissement remplace entièrement la source (un numéro retiré en amont
-disparaît aussi ici) ; une source vide ou en erreur conserve les données
-précédentes. Désactivable avec `UPDATE_LISTS=0`.
-
-```bash
-npm run update-lists                                # forcer manuellement
-node scripts/import.js liste.txt "source" "Label"   # importer un fichier local
-```
-
-Format d'un fichier local : un numéro par ligne ; `0162*` = préfixe couvrant
-toute la plage. Un préfixe importé doit faire au moins 5 chiffres (garde-fou
-anti-empoisonnement si une source amont est compromise).
+Les sources (spamtel, begone-fr, définies dans `backend/src/lists.rs`) sont
+téléchargées **au démarrage puis toutes les 24 h** depuis une allowlist
+d'hôtes (anti-SSRF) : préfixes ARCEP et opérateurs VoIP utilisés par les
+spammeurs restent à jour tout seuls. Chaque rafraîchissement remplace
+entièrement la source ; une source vide ou en erreur conserve les données
+précédentes. Désactivable avec `UPDATE_LISTS=0`. Mise à jour forcée :
+`POST /api/update-lists` (admin). Un préfixe importé doit faire au moins
+5 chiffres (garde-fou anti-empoisonnement si une source amont est compromise).
 
 ## Sécurité
 
 Le serveur est conçu pour résister à un scan/abus automatisé dès sa mise en
 ligne :
 
+- **Sécurité mémoire** : backend en Rust (pas de null, pas de data race).
 - **Authentification** par clé (192 bits d'entropie), comparaison à temps
-  constant (`timingSafeEqual`).
-- **Clé admin** jamais stockée ni journalisée en clair — seul son hash
-  SHA-256 est en base.
+  constant (`subtle::ConstantTimeEq`).
+- **Clé admin** jamais stockée en clair — seul son hash SHA-256 est en base ;
+  `ADMIN_KEY` et `BOOTSTRAP_TOKEN` fournis par variables d'environnement.
 - **Rate-limiting** par IP (IP réelle via `CF-Connecting-IP` derrière
   Cloudflare) : plafond global, quotas serrés sur `bootstrap`, `reports`,
   `join-requests`, et **blocage après 20 clés invalides** (anti-bruteforce).
 - **Validation stricte des entrées** : un signalement n'accepte qu'un numéro
   au format E.164 ; tout le reste (SQL, HTML, payloads) est rejeté en 400.
-- **Anti-XSS** : requêtes SQL exclusivement paramétrées, échappement HTML
-  systématique de toute donnée utilisateur rendue dans une page.
-- **En-têtes** `Content-Security-Policy` (aucun script, aucune ressource
-  externe), `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`.
+- **Anti-injection** : requêtes SQL exclusivement paramétrées (sqlx),
+  échappement HTML systématique de toute donnée rendue dans une page.
+- **En-têtes** `Content-Security-Policy`, `X-Content-Type-Options`,
+  `X-Frame-Options`, `Referrer-Policy`.
 - **Corps de requête plafonné** (8 ko), longueurs de champs bornées.
 
 ## Qualité & CI/CD
 
 Automatisations GitHub (dans `.github/`) :
 
-- **`ci.yml`** — à chaque push/PR : lint ESLint + tests + `npm audit`
-  (échoue sur CVE haute/critique) pour le backend ; `flutter analyze` +
-  `flutter test` pour l'app.
-- **`codeql.yml`** — analyse SAST CodeQL (requêtes *security-and-quality*),
-  sur push/PR et en rescan hebdomadaire.
-- **`dependabot.yml`** — mises à jour hebdomadaires des dépendances (npm,
+- **`ci.yml`** — à chaque push/PR : `cargo fmt --check`, `cargo clippy`
+  (warnings = erreurs), `cargo test` et `cargo audit` (échoue sur CVE) pour
+  le backend ; `flutter analyze` + `flutter test` pour l'app.
+- **`dependabot.yml`** — mises à jour hebdomadaires des dépendances (cargo,
   pub, Docker, GitHub Actions) + alertes de sécurité automatiques.
 
 En local :
 
 ```bash
 cd backend
-npm run lint      # ESLint (bonnes pratiques)
-npm test          # tests unitaires (node:test)
-npm audit         # vulnérabilités des dépendances
+cargo fmt --check                        # formatage
+cargo clippy --all-targets -- -D warnings # lint strict
+cargo test                               # tests unitaires
+cargo audit                              # CVE des dépendances
+cargo deny check advisories bans sources # supply-chain
 ```
 
 ## Licence & vie privée

@@ -11,25 +11,28 @@ permissions:
 
 jobs:
   backend:
-    name: Backend (lint · test · audit)
+    name: Backend Rust (fmt · clippy · test · audit)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: backend
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal --component rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
         with:
-          node-version: "26"
-          cache: npm
-          cache-dependency-path: backend/package-lock.json
-      - run: npm ci
-      - name: Lint (bonnes pratiques)
-        run: npm run lint
-      - name: Tests unitaires
-        run: npm test
-      - name: Audit des vulnérabilités (échoue si CVE haute/critique)
-        run: npm audit --audit-level=high
+          workspaces: backend
+      - name: Format
+        run: cargo fmt --check
+      - name: Lint (clippy, warnings = erreurs)
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test
+      - name: Audit des vulnérabilités (CVE)
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
 
   app:
     name: App Flutter (analyze · test)

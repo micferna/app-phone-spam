@@ -1,0 +1,21 @@
+[package]
+name = "phone-spam-backend"
+version = "0.2.0"
+edition = "2021"
+description = "Backend communautaire de signalement de numéros spam (Rust)"
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time", "signal"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+sha2 = "0.10"
+rand = "0.8"
+hex = "0.4"
+subtle = "2"
+
+[profile.release]
+opt-level = 2
+lto = "thin"

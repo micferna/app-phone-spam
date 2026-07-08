@@ -1,18 +1,23 @@
-# Dockerfile racine utilisé par runship (le backend vit dans backend/).
-FROM node:26-slim
+# Dockerfile racine utilisé par runship. Backend Rust (axum) dans backend/.
+# Multi-stage : build avec la toolchain complète, image finale minimale.
+
+FROM rust:1-bookworm AS builder
 WORKDIR /app
-COPY backend/package*.json ./
-# better-sqlite3 se compile depuis les sources : outils de build
-# nécessaires le temps du npm install, puis retirés.
-RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
- && npm install --omit=dev \
- && apt-get purge -y python3 make g++ && apt-get autoremove -y \
- && rm -rf /var/lib/apt/lists/*
+# Couche de cache des dépendances : on compile un main vide d'abord.
+COPY backend/Cargo.toml backend/Cargo.lock ./
+RUN mkdir src && echo 'fn main() {}' > src/main.rs \
+ && cargo build --release \
+ && rm -rf src target/release/deps/phone_spam_backend*
 COPY backend/src ./src
-COPY backend/scripts ./scripts
-COPY backend/sources.json ./sources.json
-ENV NODE_ENV=production
+RUN cargo build --release
+
+FROM debian:bookworm-slim
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY --from=builder /app/target/release/phone-spam-backend /usr/local/bin/phone-spam-backend
 ENV DB_PATH=/data/spam.db
 VOLUME /data
 EXPOSE 3000
-CMD ["node", "src/server.js"]
+CMD ["phone-spam-backend"]
