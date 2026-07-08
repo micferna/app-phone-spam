@@ -176,12 +176,32 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _roleHeld = false;
   List<GroupNumber>? _numbers;
   String? _listError;
+  String _mode = 'alert';
+
+  static const _modeHelp = {
+    'alert': 'Les appels suspects sonnent, avec une alerte '
+        '« ⚠️ Signalé par N personnes » à l\'écran.',
+    'silence': 'Les appels suspects ne sonnent pas : ils deviennent des '
+        'appels manqués, avec le détail en notification.',
+    'block': 'Les appels suspects sont rejetés direct (l\'appelant tombe '
+        'sur ta messagerie). Notification en trace.',
+  };
 
   @override
   void initState() {
     super.initState();
     _refreshRole();
     _refreshList();
+    SharedPreferences.getInstance().then((p) {
+      final m = p.getString(kPrefScreeningMode);
+      if (m != null && mounted) setState(() => _mode = m);
+    });
+  }
+
+  Future<void> _setMode(String mode) async {
+    setState(() => _mode = mode);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(kPrefScreeningMode, mode);
   }
 
   Future<void> _refreshRole() async {
@@ -271,6 +291,36 @@ class _HomeScreenState extends State<HomeScreen> {
                         child: const Text('Activer'),
                       ),
               ),
+            ),
+            const SizedBox(height: 16),
+            Text('Que faire des appels suspects ?',
+                style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment(
+                    value: 'alert',
+                    label: Text('Alerter'),
+                    icon: Icon(Icons.notifications_active)),
+                ButtonSegment(
+                    value: 'silence',
+                    label: Text('Silencieux'),
+                    icon: Icon(Icons.notifications_off)),
+                ButtonSegment(
+                    value: 'block',
+                    label: Text('Bloquer'),
+                    icon: Icon(Icons.block)),
+              ],
+              selected: {_mode},
+              onSelectionChanged: (s) => _setMode(s.first),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _modeHelp[_mode]!,
+              style: Theme.of(context)
+                  .textTheme
+                  .bodySmall
+                  ?.copyWith(color: Theme.of(context).colorScheme.outline),
             ),
             const SizedBox(height: 16),
             Text('Numéros signalés par le groupe',

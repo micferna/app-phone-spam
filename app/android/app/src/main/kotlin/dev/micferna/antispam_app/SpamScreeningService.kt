@@ -15,47 +15,81 @@ import java.net.URLEncoder
 import kotlin.concurrent.thread
 
 /**
- * Vérifie chaque appel entrant auprès du serveur du groupe.
- * L'appel n'est jamais bloqué (mode « alerter + choix ») : on répond
- * immédiatement au système, puis on affiche une notification :
- *  - numéro suspect  → alerte forte « Spam signalé par N personnes »
- *  - numéro inconnu  → notification discrète avec bouton « Signaler »
+ * Vérifie chaque appel entrant auprès du serveur du groupe, selon le
+ * mode choisi dans l'app (préférence `screening_mode`) :
+ *  - "alert"   : laisse sonner, notification si suspect (défaut) ;
+ *  - "silence" : appel suspect → pas de sonnerie, il devient un appel
+ *                manqué + notification ;
+ *  - "block"   : appel suspect → rejeté immédiatement + notification.
+ *
+ * En modes silence/block, la décision attend la réponse du serveur
+ * (~5 s max imposées par Android) ; serveur injoignable → l'appel
+ * sonne normalement, on ne rate jamais un appel légitime.
  */
 class SpamScreeningService : CallScreeningService() {
 
     override fun onScreenCall(callDetails: Call.Details) {
-        // Ne jamais retarder la sonnerie : on laisse passer tout de suite.
-        respondToCall(callDetails, CallResponse.Builder().build())
-
-        val number = callDetails.handle?.schemeSpecificPart ?: return
+        val number = callDetails.handle?.schemeSpecificPart
         val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
-        val serverUrl = prefs.getString("flutter.server_url", null) ?: return
-        val apiKey = prefs.getString("flutter.api_key", null) ?: return
+        val serverUrl = prefs.getString("flutter.server_url", null)
+        val apiKey = prefs.getString("flutter.api_key", null)
+        val mode = prefs.getString("flutter.screening_mode", "alert") ?: "alert"
 
-        thread {
-            try {
-                val encoded = URLEncoder.encode(number, "UTF-8")
-                val conn = URL("$serverUrl/api/lookup/$encoded")
-                    .openConnection() as HttpURLConnection
-                conn.setRequestProperty("X-Api-Key", apiKey)
-                conn.connectTimeout = 4000
-                conn.readTimeout = 4000
-                val body = conn.inputStream.bufferedReader().readText()
-                conn.disconnect()
+        if (number == null || serverUrl == null || apiKey == null) {
+            respondToCall(callDetails, CallResponse.Builder().build())
+            return
+        }
 
-                val json = JSONObject(body)
-                if (json.optBoolean("suspicious")) {
-                    notifySuspicious(json)
-                } else {
-                    notifyUnknown(json.optString("number", number))
-                }
-            } catch (_: Exception) {
-                // Serveur injoignable : on ne dérange pas l'utilisateur.
+        if (mode == "alert") {
+            // Ne jamais retarder la sonnerie : on laisse passer tout de
+            // suite, la notification arrive pendant que ça sonne.
+            respondToCall(callDetails, CallResponse.Builder().build())
+            thread {
+                val json = lookup(serverUrl, apiKey, number) ?: return@thread
+                if (json.optBoolean("suspicious")) notifySuspicious(json, mode)
+                else notifyUnknown(json.optString("number", number))
             }
+            return
+        }
+
+        // Modes silence / block : la réponse au système attend le verdict.
+        thread {
+            val json = lookup(serverUrl, apiKey, number)
+            val suspicious = json?.optBoolean("suspicious") == true
+            val response = when {
+                !suspicious -> CallResponse.Builder().build()
+                mode == "block" -> CallResponse.Builder()
+                    .setDisallowCall(true)
+                    .setRejectCall(true)
+                    .build()
+                else -> CallResponse.Builder()
+                    .setSilenceCall(true)
+                    .build()
+            }
+            respondToCall(callDetails, response)
+            if (json == null) return@thread
+            if (suspicious) notifySuspicious(json, mode)
+            else notifyUnknown(json.optString("number", number))
         }
     }
 
-    private fun notifySuspicious(json: JSONObject) {
+    private fun lookup(serverUrl: String, apiKey: String, number: String): JSONObject? {
+        return try {
+            val encoded = URLEncoder.encode(number, "UTF-8")
+            val conn = URL("$serverUrl/api/lookup/$encoded")
+                .openConnection() as HttpURLConnection
+            conn.setRequestProperty("X-Api-Key", apiKey)
+            conn.connectTimeout = 2000
+            conn.readTimeout = 2000
+            val body = conn.inputStream.bufferedReader().readText()
+            conn.disconnect()
+            JSONObject(body)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun notifySuspicious(json: JSONObject, mode: String) {
         val number = json.optString("number")
         val count = json.optInt("reportCount")
         val label = json.optString("importedLabel", "")
@@ -67,10 +101,16 @@ class SpamScreeningService : CallScreeningService() {
             if (label.isNotEmpty() && !arcep) add(label)
         }.joinToString(" · ")
 
+        val title = when (mode) {
+            "block" -> "⛔ Appel bloqué : $number"
+            "silence" -> "🔇 Appel silencié : $number"
+            else -> "⚠️ Appel suspect : $number"
+        }
+
         notify(
             number.hashCode(),
             channel(CHANNEL_ALERT, "Alertes spam", NotificationManager.IMPORTANCE_HIGH),
-            "⚠️ Appel suspect : $number",
+            title,
             reason.ifEmpty { "présent dans les listes de spam" },
             addReportAction = count == 0,
             number = number,

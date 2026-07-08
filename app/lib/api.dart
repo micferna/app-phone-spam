@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// FlutterSharedPreferences (préfixe "flutter.").
 const kPrefServerUrl = 'server_url';
 const kPrefApiKey = 'api_key';
+const kPrefScreeningMode = 'screening_mode'; // alert | silence | block
 
 class LookupResult {
   final String number;
