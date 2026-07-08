@@ -16,6 +16,10 @@ services:
     volumes:
       - data:/data
     restart: unless-stopped
+    labels:
+      # SQLite mono-écrivain dans le volume : recreate plutôt que
+      # blue-green (recommandation runship, évite deux écrivains).
+      - stackbase.deploy_strategy=recreate
 
 volumes:
   data:
