@@ -1,0 +1,16 @@
+{
+  "name": "phone-spam-backend",
+  "version": "0.1.0",
+  "description": "Backend communautaire de signalement de numéros spam (usage perso/proches)",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "add-user": "node scripts/add-user.js",
+    "update-lists": "node scripts/update-lists.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.10.0",
+    "express": "^4.21.2"
+  }
+}

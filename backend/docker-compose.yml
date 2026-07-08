@@ -1,0 +1,10 @@
+services:
+  api:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - ADMIN_KEY=${ADMIN_KEY:?Définir ADMIN_KEY dans un fichier .env}
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

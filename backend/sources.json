@@ -1,0 +1,14 @@
+[
+  {
+    "name": "spamtel",
+    "url": "https://raw.githubusercontent.com/guiguiabloc/spamtel/master/spamlist.csv",
+    "format": "csv-prefix",
+    "label": "Liste communautaire spamtel"
+  },
+  {
+    "name": "begone-fr",
+    "url": "https://raw.githubusercontent.com/danroc/begone-fr/main/data/numbers.yaml",
+    "format": "begone-yaml",
+    "label": "Liste communautaire begone-fr"
+  }
+]
