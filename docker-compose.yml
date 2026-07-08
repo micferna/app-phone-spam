@@ -2,8 +2,10 @@
 # construit le backend qui vit dans backend/).
 services:
   api:
-    # Syntaxe explicite requise : le déploiement blue-green de runship
-    # perd le contexte avec la forme courte `build: .`
+    # `image:` en plus de `build:` : le clone blue-green (api__bg) généré
+    # par runship ne reprend pas le contexte de build, mais réutilise
+    # l'image nommée construite par le service d'origine.
+    image: antispam-api:latest
     build:
       context: .
       dockerfile: Dockerfile
