@@ -1,0 +1,15 @@
+# Compose racine utilisé par la stack runship (le Dockerfile racine
+# construit le backend qui vit dans backend/).
+services:
+  api:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      - ADMIN_KEY=${ADMIN_KEY}
+    volumes:
+      - data:/data
+    restart: unless-stopped
+
+volumes:
+  data:
