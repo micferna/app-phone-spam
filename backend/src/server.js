@@ -8,7 +8,23 @@ const app = express();
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
-const ADMIN_KEY = process.env.ADMIN_KEY;
+
+// Clé admin : celle de l'environnement si fournie, sinon générée au
+// premier démarrage et conservée dans la base (affichée une seule fois
+// dans les logs à la génération).
+function resolveAdminKey() {
+  if (process.env.ADMIN_KEY) return process.env.ADMIN_KEY;
+  db.exec(
+    'CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)'
+  );
+  const row = db.prepare("SELECT value FROM meta WHERE key = 'admin_key'").get();
+  if (row) return row.value;
+  const key = crypto.randomBytes(24).toString('hex');
+  db.prepare("INSERT INTO meta (key, value) VALUES ('admin_key', ?)").run(key);
+  console.log(`Clé admin générée (conservée dans la base) : ${key}`);
+  return key;
+}
+const ADMIN_KEY = resolveAdminKey();
 
 // --- Auth : chaque proche a sa clé personnelle (header X-Api-Key) ---
 function auth(req, res, next) {
@@ -124,9 +140,6 @@ async function refreshLists() {
 
 app.listen(PORT, () => {
   console.log(`Backend anti-spam démarré sur le port ${PORT}`);
-  if (!ADMIN_KEY) {
-    console.warn('⚠️  ADMIN_KEY non défini : la création d’utilisateurs est désactivée.');
-  }
   if (process.env.UPDATE_LISTS !== '0') {
     refreshLists().catch((e) => console.warn('Mise à jour des listes impossible :', e.message));
     setInterval(() => refreshLists().catch(() => {}), 24 * 60 * 60 * 1000);
