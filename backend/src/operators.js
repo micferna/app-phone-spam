@@ -100,3 +100,19 @@ export async function refreshOperators() {
 export function operatorsLoaded() {
   return ranges.length;
 }
+
+// Réputation par opérateur : pour un ensemble de numéros (E.164) signalés,
+// combien de numéros distincts appartiennent à chaque opérateur. Révèle les
+// grossistes VoIP massivement utilisés par les centres d'appels.
+export function operatorReputation(e164List) {
+  const byOp = new Map();
+  for (const num of e164List) {
+    const op = operatorFor(num);
+    if (!op) continue;
+    const key = op.mnemo;
+    const entry = byOp.get(key) || { mnemo: key, name: op.name, count: 0 };
+    entry.count += 1;
+    byOp.set(key, entry);
+  }
+  return [...byOp.values()].sort((a, b) => b.count - a.count);
+}

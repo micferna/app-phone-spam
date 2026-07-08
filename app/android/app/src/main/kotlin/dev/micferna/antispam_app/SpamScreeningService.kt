@@ -6,9 +6,14 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.ContactsContract
 import android.telecom.Call
 import android.telecom.CallScreeningService
+import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
@@ -34,9 +39,17 @@ class SpamScreeningService : CallScreeningService() {
         val serverUrl = prefs.getString("flutter.server_url", null)
         val apiKey = prefs.getString("flutter.api_key", null)
         val mode = prefs.getString("flutter.screening_mode", "alert") ?: "alert"
+        val skipContacts = prefs.getBoolean("flutter.skip_contacts", true)
 
         if (number == null || serverUrl == null || apiKey == null) {
             respondToCall(callDetails, CallResponse.Builder().build())
+            return
+        }
+
+        // Exemption des contacts : un numéro connu n'est jamais filtré.
+        if (skipContacts && isInContacts(number)) {
+            respondToCall(callDetails, CallResponse.Builder().build())
+            logHistory(number, "contact", "laissé sonner", "")
             return
         }
 
@@ -45,9 +58,14 @@ class SpamScreeningService : CallScreeningService() {
             // suite, la notification arrive pendant que ça sonne.
             respondToCall(callDetails, CallResponse.Builder().build())
             thread {
-                val json = lookup(serverUrl, apiKey, number) ?: return@thread
-                if (json.optBoolean("suspicious")) notifySuspicious(json, mode)
-                else notifyUnknown(json.optString("number", number))
+                val json = lookup(serverUrl, apiKey, number)
+                if (json != null && json.optBoolean("suspicious")) {
+                    notifySuspicious(json, mode)
+                    logHistory(number, "suspect", "alerte", operatorLabel(json))
+                } else {
+                    notifyUnknown(json?.optString("number", number) ?: number)
+                    logHistory(number, "inconnu", "laissé sonner", "")
+                }
             }
             return
         }
@@ -55,7 +73,9 @@ class SpamScreeningService : CallScreeningService() {
         // Modes silence / block : la réponse au système attend le verdict.
         thread {
             val json = lookup(serverUrl, apiKey, number)
-            val suspicious = json?.optBoolean("suspicious") == true
+            // Serveur injoignable → repli sur le cache hors-ligne.
+            val suspicious = json?.optBoolean("suspicious") == true ||
+                (json == null && cachedSuspicious(prefs, number))
             val response = when {
                 !suspicious -> CallResponse.Builder().build()
                 mode == "block" -> CallResponse.Builder()
@@ -67,9 +87,69 @@ class SpamScreeningService : CallScreeningService() {
                     .build()
             }
             respondToCall(callDetails, response)
-            if (json == null) return@thread
-            if (suspicious) notifySuspicious(json, mode)
-            else notifyUnknown(json.optString("number", number))
+            val action = when {
+                !suspicious -> "laissé sonner"
+                mode == "block" -> "bloqué"
+                else -> "silencié"
+            }
+            val verdict = if (suspicious) "suspect" else "inconnu"
+            if (json != null && json.optBoolean("suspicious")) notifySuspicious(json, mode)
+            else if (!suspicious) notifyUnknown(json?.optString("number", number) ?: number)
+            logHistory(number, verdict, action, json?.let { operatorLabel(it) } ?: "")
+        }
+    }
+
+    // --- Exemption des contacts ---
+    private fun isInContacts(number: String): Boolean {
+        if (checkSelfPermission(android.Manifest.permission.READ_CONTACTS)
+            != PackageManager.PERMISSION_GRANTED
+        ) return false
+        return try {
+            val uri = Uri.withAppendedPath(
+                ContactsContract.PhoneLookup.CONTENT_FILTER_URI, Uri.encode(number)
+            )
+            contentResolver.query(uri, arrayOf(ContactsContract.PhoneLookup._ID), null, null, null)
+                ?.use { it.count > 0 } ?: false
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    // --- Cache hors-ligne : la liste des numéros suspects synchronisée par
+    // l'app (préférence flutter.cached_numbers = tableau JSON de numéros). ---
+    private fun cachedSuspicious(prefs: android.content.SharedPreferences, number: String): Boolean {
+        val raw = prefs.getString("flutter.cached_numbers", null) ?: return false
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).any { arr.optString(it) == number }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun operatorLabel(json: JSONObject): String {
+        val name = if (json.isNull("operatorName")) "" else json.optString("operatorName", "")
+        return if (name.isNotEmpty()) name else if (json.isNull("operator")) "" else json.optString("operator", "")
+    }
+
+    // --- Journal d'appels : une ligne JSON par appel screené, gardé dans un
+    // fichier local (200 dernières lignes) lu par l'app via MethodChannel. ---
+    @Synchronized
+    private fun logHistory(number: String, verdict: String, action: String, operator: String) {
+        try {
+            val entry = JSONObject()
+                .put("number", number)
+                .put("verdict", verdict)
+                .put("action", action)
+                .put("operator", operator)
+                .put("ts", System.currentTimeMillis())
+            val file = File(filesDir, HISTORY_FILE)
+            val lines = if (file.exists()) file.readLines().toMutableList() else mutableListOf()
+            lines.add(entry.toString())
+            val trimmed = if (lines.size > 200) lines.subList(lines.size - 200, lines.size) else lines
+            file.writeText(trimmed.joinToString("\n"))
+        } catch (_: Exception) {
+            // Journal best-effort : ne jamais faire échouer le screening.
         }
     }
 
@@ -203,5 +283,6 @@ class SpamScreeningService : CallScreeningService() {
     companion object {
         const val CHANNEL_ALERT = "spam_alert"
         const val CHANNEL_INFO = "unknown_call"
+        const val HISTORY_FILE = "call_history.jsonl"
     }
 }

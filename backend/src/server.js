@@ -4,7 +4,12 @@ import { rateLimit } from 'express-rate-limit';
 import { db } from './db.js';
 import { normalizeNumber, isArcepDemarchage } from './normalize.js';
 import { updateLists } from './update-lists.js';
-import { operatorFor, refreshOperators, operatorsLoaded } from './operators.js';
+import {
+  operatorFor,
+  refreshOperators,
+  operatorsLoaded,
+  operatorReputation,
+} from './operators.js';
 
 const app = express();
 app.disable('x-powered-by');
@@ -277,6 +282,22 @@ n'importe quel groupe (famille, amis, asso).</p>
 </html>`);
 });
 
+// Cache de la réputation par opérateur (recalcul paresseux quand la base
+// de signalements change) : évite de re-mapper tous les numéros à chaque
+// lookup. Clé = mnémo opérateur → { count, name }.
+let repCache = null;
+let repDirty = true;
+function reputationMap() {
+  if (!repDirty && repCache) return repCache;
+  const numbers = db
+    .prepare('SELECT DISTINCT number FROM reports')
+    .all()
+    .map((r) => r.number);
+  repCache = new Map(operatorReputation(numbers).map((o) => [o.mnemo, o]));
+  repDirty = false;
+  return repCache;
+}
+
 // --- Signaler un numéro ---
 app.post('/api/reports', auth, limiter(3_600_000, 60), (req, res) => {
   const number = normalizeNumber(req.body?.number);
@@ -288,6 +309,7 @@ app.post('/api/reports', auth, limiter(3_600_000, 60), (req, res) => {
     `INSERT INTO reports (user_id, number, category, comment) VALUES (?, ?, ?, ?)
      ON CONFLICT (user_id, number) DO UPDATE SET category = excluded.category, comment = excluded.comment`
   ).run(req.user.id, number, category, comment);
+  repDirty = true;
   const count = db
     .prepare('SELECT COUNT(*) AS c FROM reports WHERE number = ?')
     .get(number).c;
@@ -301,6 +323,7 @@ app.delete('/api/reports/:number', auth, (req, res) => {
   const info = db
     .prepare('DELETE FROM reports WHERE user_id = ? AND number = ?')
     .run(req.user.id, number);
+  if (info.changes > 0) repDirty = true;
   res.json({ number, removed: info.changes > 0 });
 });
 
@@ -319,6 +342,7 @@ app.get('/api/lookup/:number', auth, (req, res) => {
     db.prepare("SELECT source, label FROM imported_prefixes WHERE ? LIKE prefix || '%'").get(number);
   const arcep = isArcepDemarchage(number);
   const operator = operatorFor(number);
+  const opRep = operator ? reputationMap().get(operator.mnemo)?.count ?? 0 : 0;
   res.json({
     number,
     reportCount: reports.c,
@@ -328,8 +352,18 @@ app.get('/api/lookup/:number', auth, (req, res) => {
     arcepDemarchage: arcep,
     operator: operator?.mnemo ?? null,
     operatorName: operator?.name ?? null,
+    operatorReportCount: opRep,
     suspicious: reports.c > 0 || !!imported || arcep,
   });
+});
+
+// --- Réputation par opérateur (quels grossistes concentrent le spam) ---
+app.get('/api/operators', auth, (_req, res) => {
+  const numbers = db
+    .prepare('SELECT DISTINCT number FROM reports')
+    .all()
+    .map((r) => r.number);
+  res.json({ operators: operatorReputation(numbers) });
 });
 
 // --- Liste complète pour la synchro (iOS / cache hors-ligne Android) ---
@@ -473,6 +507,32 @@ app.post('/api/users', adminAuth, (req, res) => {
     return res.status(409).json({ error: 'Ce nom existe déjà' });
   }
   res.json({ name, apiKey });
+});
+
+// --- Admin : import en masse de numéros (sans rate-limit) ---
+// Pour seeder une liste (ex : numéros bloqués d'un téléphone). Ajoutés à
+// imported_numbers (source "import-admin") — donc marqués suspects sans
+// gonfler le reportCount communautaire (réservé aux vrais signalements).
+app.post('/api/reports/bulk', adminAuth, (req, res) => {
+  const list = Array.isArray(req.body?.numbers) ? req.body.numbers : [];
+  if (list.length === 0) return res.status(400).json({ error: 'numbers[] requis' });
+  if (list.length > 5000) return res.status(400).json({ error: 'max 5000 par lot' });
+  const label = cleanText(req.body?.label, 64) || 'Import manuel';
+  const ins = db.prepare(
+    "INSERT OR REPLACE INTO imported_numbers (number, source, label) VALUES (?, 'import-admin', ?)"
+  );
+  let added = 0;
+  let skipped = 0;
+  const tx = db.transaction(() => {
+    for (const raw of list) {
+      const n = normalizeNumber(raw);
+      if (!n) { skipped++; continue; }
+      ins.run(n, label);
+      added++;
+    }
+  });
+  tx();
+  res.json({ added, skipped });
 });
 
 // --- Admin : forcer la mise à jour des listes publiques ---

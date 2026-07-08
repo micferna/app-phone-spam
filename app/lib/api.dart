@@ -9,6 +9,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 const kPrefServerUrl = 'server_url';
 const kPrefApiKey = 'api_key';
 const kPrefScreeningMode = 'screening_mode'; // alert | silence | block
+const kPrefSkipContacts = 'skip_contacts'; // bool (défaut true)
+const kPrefCachedNumbers = 'cached_numbers'; // tableau JSON pour lookup offline
 
 class LookupResult {
   final String number;
@@ -111,7 +113,19 @@ class ApiClient {
         .get(_uri('/api/numbers'), headers: _headers)
         .timeout(const Duration(seconds: 8));
     if (res.statusCode != 200) throw Exception('Erreur ${res.statusCode}');
-    final community = jsonDecode(res.body)['community'] as List;
+    final body = jsonDecode(res.body);
+    final community = body['community'] as List;
+    final imported = (body['imported'] as List?) ?? [];
+
+    // Cache hors-ligne : tous les numéros connus (communauté + importés)
+    // → lus par le service natif pour un blocage instantané même sans réseau.
+    final all = <String>{
+      ...community.map((e) => e['number'] as String),
+      ...imported.map((e) => e['number'] as String),
+    };
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(kPrefCachedNumbers, jsonEncode(all.toList()));
+
     return community
         .map((e) => GroupNumber.fromJson(e as Map<String, dynamic>))
         .toList()

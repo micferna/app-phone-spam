@@ -6,6 +6,7 @@ import android.os.Build
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.File
 
 class MainActivity : FlutterActivity() {
     private val channelName = "antispam/native"
@@ -49,6 +50,25 @@ class MainActivity : FlutterActivity() {
                         }
                         result.success(null)
                     }
+                    "requestContactsPermission" -> {
+                        if (checkSelfPermission(android.Manifest.permission.READ_CONTACTS)
+                            != PackageManager.PERMISSION_GRANTED
+                        ) {
+                            requestPermissions(
+                                arrayOf(android.Manifest.permission.READ_CONTACTS),
+                                REQUEST_CONTACTS
+                            )
+                        }
+                        result.success(null)
+                    }
+                    "getHistory" -> {
+                        val file = File(filesDir, SpamScreeningService.HISTORY_FILE)
+                        result.success(if (file.exists()) file.readText() else "")
+                    }
+                    "clearHistory" -> {
+                        File(filesDir, SpamScreeningService.HISTORY_FILE).delete()
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -58,5 +78,6 @@ class MainActivity : FlutterActivity() {
         private const val REQUEST_ROLE = 1001
         private const val REQUEST_NOTIF = 1002
         private const val REQUEST_ANSWER = 1003
+        private const val REQUEST_CONTACTS = 1004
     }
 }
