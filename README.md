@@ -172,6 +172,8 @@ Les routes admin exigent `X-Admin-Key`.
 | `POST /api/join-requests/:id/approve` | admin | Approuver → crée le membre + clé |
 | `POST /api/join-requests/:id/reject` | admin | Rejeter une demande |
 | `POST /api/users` `{name}` | admin | Créer un membre directement |
+| `GET /api/users` | admin | Lister les membres (sans les clés) |
+| `DELETE /api/users/{id}` | admin | Supprimer un membre + ses données (RGPD) |
 | `POST /api/reports/bulk` `{numbers[], label?}` | admin | Import en masse (sans rate-limit) |
 | `GET /api/operators` | membre | Réputation par opérateur (quels grossistes concentrent le spam) |
 | `POST /api/check-sms` `{sender, text}` | membre | Analyse anti-smishing d'un SMS |
