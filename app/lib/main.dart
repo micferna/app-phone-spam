@@ -4,11 +4,22 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:package_info_plus/package_info_plus.dart';
+
 import 'api.dart';
+import 'onboarding.dart';
+import 'settings.dart';
 
 /// Canal vers le code natif Android : demande du rôle de filtrage
 /// d'appels (ROLE_CALL_SCREENING) et de la permission notifications.
 const _native = MethodChannel('antispam/native');
+
+Future<void> launchReleases() async {
+  try {
+    await _native.invokeMethod(
+        'openUrl', 'https://github.com/$kRepoSlug/releases/latest');
+  } catch (_) {}
+}
 
 void main() => runApp(const AntiSpamApp());
 
@@ -161,10 +172,39 @@ class _SetupScreenState extends State<SetupScreen> {
                       child: CircularProgressIndicator(strokeWidth: 2))
                   : const Text('Se connecter'),
             ),
+            const SizedBox(height: 20),
+            const Row(children: [
+              Expanded(child: Divider()),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: 12),
+                child: Text('ou'),
+              ),
+              Expanded(child: Divider()),
+            ]),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: _busy ? null : _scanInvite,
+              icon: const Icon(Icons.qr_code_scanner),
+              label: const Text('Scanner une invitation'),
+            ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _scanInvite() async {
+    final result = await Navigator.push<Map<String, String>>(
+      context,
+      MaterialPageRoute(builder: (_) => const ScanInviteScreen()),
+    );
+    if (result == null) return;
+    final url = result['url']!;
+    final key = result['key']!;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(kPrefServerUrl, url);
+    await prefs.setString(kPrefApiKey, key);
+    widget.onDone(ApiClient(url, key));
   }
 }
 
@@ -189,6 +229,8 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _skipContacts = true;
   bool _smsFilter = false;
   int _tab = 0;
+  List<String> _campaigns = [];
+  String? _updateTag; // version plus récente dispo, sinon null
 
   static const _modeHelp = {
     'alert': 'Les appels suspects sonnent, avec une alerte '
@@ -204,6 +246,8 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _refreshRole();
     _refreshList();
+    _refreshCampaigns();
+    _checkUpdate();
     SharedPreferences.getInstance().then((p) {
       final m = p.getString(kPrefScreeningMode);
       final sc = p.getBool(kPrefSkipContacts) ?? true;
@@ -277,6 +321,35 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _refreshCampaigns() async {
+    final c = await widget.api.activeCampaigns();
+    if (mounted) setState(() => _campaigns = c);
+  }
+
+  Future<void> _checkUpdate() async {
+    final tag = await latestReleaseTag();
+    if (tag == null) return;
+    try {
+      final info = await PackageInfo.fromPlatform();
+      final latest = tag.replaceFirst('v', '').trim();
+      if (_isNewer(latest, info.version) && mounted) {
+        setState(() => _updateTag = tag);
+      }
+    } catch (_) {}
+  }
+
+  // Compare deux versions "x.y.z" ; true si a > b.
+  bool _isNewer(String a, String b) {
+    final pa = a.split('.').map((x) => int.tryParse(x) ?? 0).toList();
+    final pb = b.split('.').map((x) => int.tryParse(x) ?? 0).toList();
+    for (var i = 0; i < 3; i++) {
+      final va = i < pa.length ? pa[i] : 0;
+      final vb = i < pb.length ? pb[i] : 0;
+      if (va != vb) return va > vb;
+    }
+    return false;
+  }
+
   Future<void> _openReportSheet() async {
     final reported = await showModalBottomSheet<bool>(
       context: context,
@@ -299,6 +372,22 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: Text(_tab == 0 ? 'Anti-Spam' : 'Historique'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.tune),
+            tooltip: 'Réglages avancés',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const SettingsScreen()),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.person_add_alt),
+            tooltip: 'Inviter un membre (admin)',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => InviteScreen(api: widget.api)),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.logout),
             tooltip: 'Changer de compte',
@@ -337,6 +426,27 @@ class _HomeScreenState extends State<HomeScreen> {
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          if (_updateTag != null)
+            Card(
+              color: scheme.tertiaryContainer,
+              child: ListTile(
+                leading: const Icon(Icons.system_update),
+                title: Text('Nouvelle version $_updateTag disponible'),
+                subtitle: const Text('Appuie pour télécharger la mise à jour.'),
+                onTap: () => launchReleases(),
+              ),
+            ),
+          if (_campaigns.isNotEmpty)
+            Card(
+              color: scheme.errorContainer,
+              child: ListTile(
+                leading: const Icon(Icons.campaign),
+                title: Text('⚡ ${_campaigns.length} campagne'
+                    '${_campaigns.length > 1 ? 's' : ''} de démarchage en cours'),
+                subtitle: Text(
+                    'Pics de signalements sur : ${_campaigns.take(4).join(', ')}${_campaigns.length > 4 ? '…' : ''}'),
+              ),
+            ),
           Card(
               color: _roleHeld ? scheme.primaryContainer : scheme.errorContainer,
               child: ListTile(

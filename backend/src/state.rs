@@ -28,6 +28,8 @@ pub struct AppState {
     pub rep_dirty: Arc<AtomicBool>,
     /// Serveurs pairs dont on importe le flux (fédération), via FEDERATION_PEERS.
     pub federation_peers: Vec<String>,
+    /// Dossier des sauvegardes quotidiennes.
+    pub backup_dir: String,
 }
 
 impl AppState {

@@ -8,10 +8,31 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// FlutterSharedPreferences (préfixe "flutter.").
 const kPrefServerUrl = 'server_url';
 const kPrefApiKey = 'api_key';
+const kPrefAdminKey = 'admin_key'; // stocké seulement sur l'appareil de l'admin
 const kPrefScreeningMode = 'screening_mode'; // alert | silence | block
 const kPrefSkipContacts = 'skip_contacts'; // bool (défaut true)
 const kPrefCachedNumbers = 'cached_numbers'; // tableau JSON pour lookup offline
 const kPrefSmsFilter = 'sms_filter'; // bool (défaut false) — détection SMS
+const kPrefWhitelist = 'whitelist'; // tableau JSON de numéros jamais filtrés
+const kPrefNightSilence = 'night_silence'; // bool — silence la nuit
+const kPrefNightStart = 'night_start'; // int heure (défaut 21)
+const kPrefNightEnd = 'night_end'; // int heure (défaut 8)
+
+const kRepoSlug = 'micferna/app-phone-spam';
+
+/// Dernier tag de release publié sur GitHub (ex : "v1.2.0"), ou null.
+Future<String?> latestReleaseTag() async {
+  try {
+    final res = await http
+        .get(Uri.parse('https://api.github.com/repos/$kRepoSlug/releases/latest'),
+            headers: {'Accept': 'application/vnd.github+json'})
+        .timeout(const Duration(seconds: 6));
+    if (res.statusCode != 200) return null;
+    return jsonDecode(res.body)['tag_name'] as String?;
+  } catch (_) {
+    return null;
+  }
+}
 
 class LookupResult {
   final String number;
@@ -46,6 +67,31 @@ class ApiClient {
   final String apiKey;
 
   ApiClient(this.baseUrl, this.apiKey);
+
+  /// Crée une invitation à usage unique (admin) → renvoie le token.
+  Future<String> createInvite(String adminKey) async {
+    final res = await http
+        .post(_uri('/api/invites'), headers: {'X-Admin-Key': adminKey})
+        .timeout(const Duration(seconds: 8));
+    if (res.statusCode != 200) {
+      throw Exception('Clé admin refusée (${res.statusCode})');
+    }
+    return jsonDecode(res.body)['token'] as String;
+  }
+
+  /// Consomme une invitation (nouveau membre, sans clé) → renvoie l'apiKey.
+  static Future<String> redeemInvite(String url, String token, String name) async {
+    final res = await http
+        .post(Uri.parse('$url/api/invite/redeem'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'token': token, 'name': name}))
+        .timeout(const Duration(seconds: 8));
+    if (res.statusCode != 200) {
+      throw Exception(
+          jsonDecode(res.body)['error'] ?? 'Invitation invalide (${res.statusCode})');
+    }
+    return jsonDecode(res.body)['apiKey'] as String;
+  }
 
   static Future<ApiClient?> fromPrefs() async {
     final prefs = await SharedPreferences.getInstance();
@@ -117,6 +163,20 @@ class ApiClient {
             headers: _headers,
             body: jsonEncode({'number': number, 'wasSpam': wasSpam}))
         .timeout(const Duration(seconds: 8));
+  }
+
+  /// Campagnes de démarchage actives (plages en pic de signalements).
+  Future<List<String>> activeCampaigns() async {
+    try {
+      final res = await http
+          .get(_uri('/api/alerts'), headers: _headers)
+          .timeout(const Duration(seconds: 6));
+      if (res.statusCode != 200) return [];
+      final list = jsonDecode(res.body)['campaigns'] as List;
+      return list.map((c) => '${c['prefix']}').toList();
+    } catch (_) {
+      return [];
+    }
   }
 
   Future<List<GroupNumber>> groupNumbers() async {

@@ -75,6 +75,13 @@ pub async fn init_pool(db_path: &str) -> Result<SqlitePool, sqlx::Error> {
               created_at TEXT NOT NULL DEFAULT (datetime('now')),
               UNIQUE (user_id, number)
            )"#,
+        // Invitations à usage unique (onboarding par QR / lien).
+        r#"CREATE TABLE IF NOT EXISTS invites (
+              token TEXT PRIMARY KEY,
+              used INTEGER NOT NULL DEFAULT 0,
+              created_at TEXT NOT NULL DEFAULT (datetime('now')),
+              expires_at TEXT NOT NULL
+           )"#,
         "CREATE INDEX IF NOT EXISTS idx_reports_number ON reports(number)",
         "CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_join_status ON join_requests(status)",

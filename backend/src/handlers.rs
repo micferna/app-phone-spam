@@ -526,6 +526,121 @@ pub async fn create_user(
     ok(json!({ "name": name, "apiKey": api_key }))
 }
 
+// --- admin : créer une invitation à usage unique (onboarding QR) ---
+pub async fn create_invite(State(st): State<AppState>, headers: HeaderMap) -> ApiResult {
+    require_admin(&st, &headers).await?;
+    let token = gen_key();
+    sqlx::query("INSERT INTO invites (token, expires_at) VALUES (?, datetime('now','+7 days'))")
+        .bind(&token)
+        .execute(&st.pool)
+        .await
+        .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
+    ok(json!({ "token": token, "expiresInDays": 7 }))
+}
+
+// --- public : consommer une invitation → crée le membre + sa clé ---
+pub async fn redeem_invite(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    if !st.rate_ok(
+        &format!("invite:{}", client_ip(&headers)),
+        Duration::from_secs(3600),
+        10,
+    ) {
+        return Err(e(StatusCode::TOO_MANY_REQUESTS, "Trop de requêtes"));
+    }
+    let token = body["token"].as_str().unwrap_or("");
+    let name = take(body["name"].as_str().unwrap_or(""), 64);
+    if name.is_empty() {
+        return Err(e(StatusCode::BAD_REQUEST, "Nom requis"));
+    }
+    let valid: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM invites WHERE token = ? AND used = 0 AND expires_at > datetime('now')",
+    )
+    .bind(token)
+    .fetch_optional(&st.pool)
+    .await
+    .ok()
+    .flatten();
+    if valid.is_none() {
+        return Err(e(StatusCode::FORBIDDEN, "Invitation invalide ou expirée"));
+    }
+    let mut uname = name.clone();
+    let mut i = 2;
+    while sqlx::query_scalar::<_, i64>("SELECT 1 FROM users WHERE name = ?")
+        .bind(&uname)
+        .fetch_optional(&st.pool)
+        .await
+        .ok()
+        .flatten()
+        .is_some()
+    {
+        uname = format!("{name} ({i})");
+        i += 1;
+    }
+    let api_key = gen_key();
+    let mut tx = st
+        .pool
+        .begin()
+        .await
+        .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
+    sqlx::query("INSERT INTO users (name, api_key) VALUES (?, ?)")
+        .bind(&uname)
+        .bind(&api_key)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
+    // Usage unique : on marque l'invitation consommée.
+    sqlx::query("UPDATE invites SET used = 1 WHERE token = ?")
+        .bind(token)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
+    tx.commit()
+        .await
+        .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
+    ok(json!({ "name": uname, "apiKey": api_key }))
+}
+
+// --- alertes : campagnes de démarchage actives (l'app poll ceci) ---
+pub async fn alerts(State(st): State<AppState>, headers: HeaderMap) -> ApiResult {
+    require_user(&st, &headers).await?;
+    let campaigns: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT substr(number,1,6) AS pfx, COUNT(DISTINCT number) AS c FROM reports \
+         WHERE created_at > datetime('now','-1 day') GROUP BY pfx HAVING c >= 3 ORDER BY c DESC LIMIT 20",
+    )
+    .fetch_all(&st.pool)
+    .await
+    .unwrap_or_default();
+    ok(json!({
+        "campaigns": campaigns.iter().map(|(p, c)| json!({"prefix": p, "count": c})).collect::<Vec<_>>()
+    }))
+}
+
+// --- admin : export de la base (dump SQLite propre, pour backup off-site) ---
+pub async fn export_db(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    if require_admin(&st, &headers).await.is_err() {
+        return (StatusCode::UNAUTHORIZED, "Clé admin invalide").into_response();
+    }
+    match crate::backups::snapshot_bytes(&st.pool).await {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [
+                ("content-type", "application/octet-stream"),
+                (
+                    "content-disposition",
+                    "attachment; filename=\"antispam-backup.db\"",
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => (StatusCode::INTERNAL_SERVER_ERROR, "export impossible").into_response(),
+    }
+}
+
 // --- admin : import en masse ---
 pub async fn bulk_import(
     State(st): State<AppState>,

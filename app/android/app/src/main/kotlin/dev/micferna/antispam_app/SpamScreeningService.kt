@@ -37,16 +37,19 @@ class SpamScreeningService : CallScreeningService() {
         val prefs = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
         val serverUrl = prefs.getString("flutter.server_url", null)
         val apiKey = prefs.getString("flutter.api_key", null)
-        val mode = prefs.getString("flutter.screening_mode", "alert") ?: "alert"
+        val chosenMode = prefs.getString("flutter.screening_mode", "alert") ?: "alert"
         val skipContacts = prefs.getBoolean("flutter.skip_contacts", true)
+        // « Ne pas déranger la nuit » : les appels suspects sont silenciés la
+        // nuit même en mode Alerter.
+        val mode = if (chosenMode == "alert" && nightSilenceActive(prefs)) "silence" else chosenMode
 
         if (number == null || serverUrl == null || apiKey == null) {
             respondToCall(callDetails, CallResponse.Builder().build())
             return
         }
 
-        // Exemption des contacts : un numéro connu n'est jamais filtré.
-        if (skipContacts && isInContacts(number)) {
+        // Exemption des contacts + whitelist manuelle : jamais filtrés.
+        if ((skipContacts && isInContacts(number)) || isWhitelisted(prefs, number)) {
             respondToCall(callDetails, CallResponse.Builder().build())
             logHistory(number, "contact", "laissé sonner", "")
             return
@@ -112,6 +115,27 @@ class SpamScreeningService : CallScreeningService() {
         } catch (_: Exception) {
             false
         }
+    }
+
+    // --- Whitelist manuelle (préférence flutter.whitelist = tableau JSON) ---
+    private fun isWhitelisted(prefs: android.content.SharedPreferences, number: String): Boolean {
+        val raw = prefs.getString("flutter.whitelist", null) ?: return false
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).any { arr.optString(it) == number }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    // --- « Ne pas déranger la nuit » : plage horaire flutter.night_start/end
+    // (heures), actif si flutter.night_silence est vrai. ---
+    private fun nightSilenceActive(prefs: android.content.SharedPreferences): Boolean {
+        if (!prefs.getBoolean("flutter.night_silence", false)) return false
+        val start = prefs.getLong("flutter.night_start", 21).toInt()
+        val end = prefs.getLong("flutter.night_end", 8).toInt()
+        val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+        return if (start <= end) hour in start until end else hour >= start || hour < end
     }
 
     // --- Cache hors-ligne : la liste des numéros suspects synchronisée par

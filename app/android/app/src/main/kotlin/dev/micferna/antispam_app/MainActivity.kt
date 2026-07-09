@@ -72,6 +72,18 @@ class MainActivity : FlutterActivity() {
                         }
                         result.success(null)
                     }
+                    "openUrl" -> {
+                        val url = call.arguments as? String
+                        if (url != null) {
+                            startActivity(
+                                android.content.Intent(
+                                    android.content.Intent.ACTION_VIEW,
+                                    android.net.Uri.parse(url)
+                                ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        }
+                        result.success(null)
+                    }
                     "getHistory" -> {
                         val file = File(filesDir, History.FILE)
                         result.success(if (file.exists()) file.readText() else "")

@@ -179,6 +179,10 @@ Les routes admin exigent `X-Admin-Key`.
 | `GET /api/federation/feed` | public | Flux des numéros confirmés (≥2 membres), pour la fédération |
 | `GET /api/stats` | admin | Statistiques (dashboard) |
 | `GET`·`POST /admin` | admin | Dashboard web (auth par clé) |
+| `GET /api/alerts` | membre | Campagnes de démarchage actives |
+| `POST /api/invites` | admin | Créer une invitation à usage unique (QR) |
+| `POST /api/invite/redeem` `{token, name}` | public | Consommer une invitation → crée le membre |
+| `GET /api/export` | admin | Télécharger un dump SQLite (backup off-site) |
 | `POST /api/update-lists` | admin | Forcer la mise à jour des listes publiques |
 
 Un numéro est marqué `suspicious` s'il est signalé par le groupe, présent
@@ -200,6 +204,15 @@ démarchage (décision 2022-1583 : 0162, 0163, 0270, 0271, 0377, 0378, 0424,
   opérateurs, signalements récents, feedback.
 - **Aide au 33700** : l'app propose de transférer un SMS suspect à la
   plateforme nationale (33700).
+- **Onboarding par QR** : l'admin génère une invitation à usage unique (QR) ;
+  le nouveau membre la scanne depuis l'écran de connexion → clé créée
+  automatiquement, sans échange manuel.
+- **Sauvegardes** : dump SQLite quotidien rotatif (7 jours) sur le volume +
+  `GET /api/export` (admin) pour récupérer un backup off-site.
+- **Bandeau « campagne active »** et **notification de mise à jour** (nouvelle
+  release GitHub) dans l'app.
+- **Réglages avancés** : « ne pas déranger la nuit » (silence des appels
+  suspects sur une plage horaire) et **whitelist** manuelle de numéros.
 
 ### Identification de l'opérateur (open data ARCEP MAJNUM)
 

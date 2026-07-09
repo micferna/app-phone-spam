@@ -1,5 +1,6 @@
 //! Backend anti-spam communautaire — Rust (axum + SQLite).
 
+mod backups;
 mod federation;
 mod handlers;
 mod lists;
@@ -38,6 +39,10 @@ async fn main() {
         .unwrap_or(3000);
 
     let pool = schema::init_pool(&db_path).await.expect("init base SQLite");
+    let backup_dir = std::path::Path::new(&db_path)
+        .parent()
+        .map(|p| p.join("backups").to_string_lossy().to_string())
+        .unwrap_or_else(|| "./data/backups".into());
 
     let st = AppState {
         pool,
@@ -50,7 +55,19 @@ async fn main() {
         federation_peers: federation::parse_peers(
             &std::env::var("FEDERATION_PEERS").unwrap_or_default(),
         ),
+        backup_dir,
     };
+
+    // Sauvegarde quotidienne de la base (rotation 7 jours sur le volume).
+    {
+        let bg = st.clone();
+        tokio::spawn(async move {
+            loop {
+                backups::run_daily_backup(&bg.pool, &bg.backup_dir).await;
+                tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await;
+            }
+        });
+    }
 
     // Rafraîchissement des données publiques : au démarrage puis toutes les 24 h.
     if std::env::var("UPDATE_LISTS").as_deref() != Ok("0") {
@@ -88,9 +105,13 @@ async fn main() {
         .route("/api/operators", get(handlers::operators))
         .route("/api/check-sms", post(handlers::check_sms))
         .route("/api/feedback", post(handlers::feedback))
+        .route("/api/alerts", get(handlers::alerts))
         .route("/api/federation/feed", get(handlers::federation_feed))
         .route("/api/stats", get(handlers::stats))
+        .route("/api/export", get(handlers::export_db))
         .route("/api/users", post(handlers::create_user))
+        .route("/api/invites", post(handlers::create_invite))
+        .route("/api/invite/redeem", post(handlers::redeem_invite))
         .route("/api/update-lists", post(handlers::update_lists))
         .route(
             "/admin",
