@@ -6,8 +6,8 @@ use sqlx::SqlitePool;
 /// Écrit une copie propre et cohérente de la base dans `path` (écrase).
 async fn snapshot_to(pool: &SqlitePool, path: &str) -> Result<(), String> {
     let _ = std::fs::remove_file(path); // VACUUM INTO exige un fichier absent
-    // Chemin serveur (pas d'entrée utilisateur) ; on échappe les quotes et on
-    // atteste explicitement que le SQL est sûr (audité).
+                                        // Chemin serveur (pas d'entrée utilisateur) ; on échappe les quotes et on
+                                        // atteste explicitement que le SQL est sûr (audité).
     let safe = path.replace('\'', "''");
     sqlx::raw_sql(sqlx::AssertSqlSafe(format!("VACUUM INTO '{safe}'")))
         .execute(pool)

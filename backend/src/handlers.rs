@@ -556,17 +556,7 @@ pub async fn redeem_invite(
     if name.is_empty() {
         return Err(e(StatusCode::BAD_REQUEST, "Nom requis"));
     }
-    let valid: Option<i64> = sqlx::query_scalar(
-        "SELECT 1 FROM invites WHERE token = ? AND used = 0 AND expires_at > datetime('now')",
-    )
-    .bind(token)
-    .fetch_optional(&st.pool)
-    .await
-    .ok()
-    .flatten();
-    if valid.is_none() {
-        return Err(e(StatusCode::FORBIDDEN, "Invitation invalide ou expirée"));
-    }
+    // Nom unique (best-effort ; la contrainte UNIQUE de users tranche in fine).
     let mut uname = name.clone();
     let mut i = 2;
     while sqlx::query_scalar::<_, i64>("SELECT 1 FROM users WHERE name = ?")
@@ -586,18 +576,31 @@ pub async fn redeem_invite(
         .begin()
         .await
         .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
-    sqlx::query("INSERT INTO users (name, api_key) VALUES (?, ?)")
+    // Verrou atomique : la consommation de l'invitation (used 0→1) EST le
+    // contrôle. Une seule requête concurrente peut basculer la ligne ; les
+    // autres obtiennent 0 ligne affectée → rejetées (pas de double-usage).
+    let consumed = sqlx::query(
+        "UPDATE invites SET used = 1 WHERE token = ? AND used = 0 AND expires_at > datetime('now')",
+    )
+    .bind(token)
+    .execute(&mut *tx)
+    .await
+    .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
+    if consumed.rows_affected() != 1 {
+        return Err(e(StatusCode::FORBIDDEN, "Invitation invalide ou expirée"));
+        // tx non commit → rollback automatique.
+    }
+    // Collision de nom concurrente → l'INSERT échoue, on annule tout (l'invitation
+    // reste consommable puisque la transaction est annulée).
+    if sqlx::query("INSERT INTO users (name, api_key) VALUES (?, ?)")
         .bind(&uname)
         .bind(&api_key)
         .execute(&mut *tx)
         .await
-        .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
-    // Usage unique : on marque l'invitation consommée.
-    sqlx::query("UPDATE invites SET used = 1 WHERE token = ?")
-        .bind(token)
-        .execute(&mut *tx)
-        .await
-        .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
+        .is_err()
+    {
+        return Err(e(StatusCode::CONFLICT, "Réessaie"));
+    }
     tx.commit()
         .await
         .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
