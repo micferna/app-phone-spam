@@ -46,6 +46,9 @@ class ReportReceiver : BroadcastReceiver() {
                 )
                 conn.inputStream.close()
                 conn.disconnect()
+                // Trace dans l'historique local : le signalement doit être visible
+                // dans l'onglet « Historique » de l'app.
+                History.log(context, "report", number, "signalé", "signalé comme spam", "")
             } catch (_: Exception) {
                 // Signalement perdu : l'utilisateur pourra le refaire depuis l'app.
             } finally {

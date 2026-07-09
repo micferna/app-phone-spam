@@ -221,7 +221,7 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   bool _roleHeld = false;
   List<GroupNumber>? _numbers;
   String? _listError;
@@ -231,6 +231,8 @@ class _HomeScreenState extends State<HomeScreen> {
   int _tab = 0;
   List<String> _campaigns = [];
   String? _updateTag; // version plus récente dispo, sinon null
+  bool _fsiGranted = true; // autorisation « notifications plein écran » (Android 14+)
+  final _historyKey = GlobalKey<_HistoryTabState>();
 
   static const _modeHelp = {
     'alert': 'Les appels suspects sonnent, avec une alerte '
@@ -244,7 +246,9 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _refreshRole();
+    _checkFsi();
     _refreshList();
     _refreshCampaigns();
     _checkUpdate();
@@ -290,6 +294,22 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  // L'utilisateur revient d'un écran système (rôle, autorisation plein écran) :
+  // on rafraîchit les états qui ont pu changer en dehors de l'app.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _refreshRole();
+      _checkFsi();
+    }
+  }
+
   Future<void> _refreshRole() async {
     try {
       final held = await _native.invokeMethod<bool>('isRoleHeld') ?? false;
@@ -299,6 +319,25 @@ class _HomeScreenState extends State<HomeScreen> {
     } on MissingPluginException {
       // idem
     }
+  }
+
+  // Autorisation « notifications plein écran » (Android 14+) : sans elle,
+  // l'écran d'alerte rouge ne s'affiche pas pendant la sonnerie.
+  Future<void> _checkFsi() async {
+    try {
+      final ok = await _native.invokeMethod<bool>('canUseFullScreenIntent') ?? true;
+      if (mounted) setState(() => _fsiGranted = ok);
+    } catch (_) {
+      // canal indisponible : on n'affiche pas d'avertissement.
+      if (mounted) setState(() => _fsiGranted = true);
+    }
+  }
+
+  Future<void> _requestFsi() async {
+    try {
+      await _native.invokeMethod('requestFullScreenIntent');
+    } catch (_) {}
+    // Le retour depuis les réglages déclenchera didChangeAppLifecycleState.
   }
 
   Future<void> _requestRole() async {
@@ -404,7 +443,10 @@ class _HomeScreenState extends State<HomeScreen> {
           : null,
       bottomNavigationBar: NavigationBar(
         selectedIndex: _tab,
-        onDestinationSelected: (i) => setState(() => _tab = i),
+        onDestinationSelected: (i) {
+          setState(() => _tab = i);
+          if (i == 1) _historyKey.currentState?.reload();
+        },
         destinations: const [
           NavigationDestination(icon: Icon(Icons.shield), label: 'Protection'),
           NavigationDestination(icon: Icon(Icons.history), label: 'Historique'),
@@ -414,7 +456,7 @@ class _HomeScreenState extends State<HomeScreen> {
         index: _tab,
         children: [
           _protectionTab(scheme),
-          HistoryTab(api: widget.api),
+          HistoryTab(key: _historyKey, api: widget.api),
         ],
       ),
     );
@@ -465,6 +507,23 @@ class _HomeScreenState extends State<HomeScreen> {
                       ),
               ),
             ),
+            if (_roleHeld && !_fsiGranted)
+              Card(
+                color: scheme.errorContainer,
+                child: ListTile(
+                  leading: const Icon(Icons.crop_free),
+                  title: const Text('Écran d\'alerte plein écran désactivé'),
+                  subtitle: const Text(
+                      'Depuis Android 14, l\'alerte rouge par-dessus l\'appel a '
+                      'besoin de l\'autorisation « notifications plein écran ». '
+                      'Sans elle, tu ne vois qu\'une notification.'),
+                  isThreeLine: true,
+                  trailing: FilledButton(
+                    onPressed: _requestFsi,
+                    child: const Text('Autoriser'),
+                  ),
+                ),
+              ),
             const SizedBox(height: 16),
             Text('Que faire des appels suspects ?',
                 style: Theme.of(context).textTheme.titleMedium),
@@ -566,14 +625,32 @@ class HistoryTab extends StatefulWidget {
   State<HistoryTab> createState() => _HistoryTabState();
 }
 
-class _HistoryTabState extends State<HistoryTab> {
+class _HistoryTabState extends State<HistoryTab> with WidgetsBindingObserver {
   List<Map<String, dynamic>>? _entries;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _load();
   }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  // Le journal est écrit par le service natif (appels) et par le bouton
+  // « Signaler ». On le recharge dès que l'app revient au premier plan — par
+  // ex. après avoir signalé un numéro depuis la notification.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _load();
+  }
+
+  /// Rechargement déclenché de l'extérieur (changement d'onglet).
+  Future<void> reload() => _load();
 
   Future<void> _load() async {
     try {
@@ -615,6 +692,9 @@ class _HistoryTabState extends State<HistoryTab> {
       String kind, String verdict, String action) {
     if (kind == 'sms') {
       return (icon: Icons.sms_failed, color: Colors.red, label: 'SMS suspect');
+    }
+    if (kind == 'report' || verdict == 'signalé') {
+      return (icon: Icons.flag, color: Colors.red, label: 'Signalé comme spam');
     }
     if (action == 'bloqué') return (icon: Icons.block, color: Colors.red, label: 'Bloqué');
     if (action == 'silencié') {

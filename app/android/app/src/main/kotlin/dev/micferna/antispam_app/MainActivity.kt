@@ -1,8 +1,12 @@
 package dev.micferna.antispam_app
 
+import android.app.NotificationManager
 import android.app.role.RoleManager
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
+import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -47,6 +51,42 @@ class MainActivity : FlutterActivity() {
                                 arrayOf(android.Manifest.permission.ANSWER_PHONE_CALLS),
                                 REQUEST_ANSWER
                             )
+                        }
+                        result.success(null)
+                    }
+                    // Depuis Android 14 (API 34), l'affichage plein écran par-dessus
+                    // un appel entrant (l'écran rouge « anti-spam ») exige une
+                    // autorisation spéciale « Notifications plein écran ». Sans elle,
+                    // le système rétrograde silencieusement l'alerte en simple
+                    // notification — c'est pour ça que l'écran rouge n'apparaît pas
+                    // pendant la sonnerie, seulement quand on ouvre la notif.
+                    "canUseFullScreenIntent" -> {
+                        val ok = if (Build.VERSION.SDK_INT >= 34) {
+                            getSystemService(NotificationManager::class.java)
+                                .canUseFullScreenIntent()
+                        } else {
+                            true
+                        }
+                        result.success(ok)
+                    }
+                    "requestFullScreenIntent" -> {
+                        if (Build.VERSION.SDK_INT >= 34) {
+                            try {
+                                startActivity(
+                                    Intent(
+                                        Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                                        Uri.parse("package:$packageName")
+                                    )
+                                )
+                            } catch (_: Exception) {
+                                // Repli : réglages généraux de l'app.
+                                startActivity(
+                                    Intent(
+                                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                        Uri.parse("package:$packageName")
+                                    )
+                                )
+                            }
                         }
                         result.success(null)
                     }
