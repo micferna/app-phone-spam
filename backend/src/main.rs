@@ -39,6 +39,28 @@ async fn main() {
         .unwrap_or(3000);
 
     let pool = schema::init_pool(&db_path).await.expect("init base SQLite");
+
+    // Migration : hashe les clés API en clair héritées (SHA-256). Discriminant :
+    // une empreinte hex fait 64 caractères, une clé brute en fait 48. Idempotent.
+    // Doit tourner avant de servir la moindre requête pour ne verrouiller personne.
+    {
+        let legacy: Vec<(i64, String)> =
+            sqlx::query_as("SELECT id, api_key FROM users WHERE length(api_key) <> 64")
+                .fetch_all(&pool)
+                .await
+                .unwrap_or_default();
+        for (id, k) in &legacy {
+            let _ = sqlx::query("UPDATE users SET api_key = ? WHERE id = ?")
+                .bind(handlers::sha256_hex(k))
+                .bind(id)
+                .execute(&pool)
+                .await;
+        }
+        if !legacy.is_empty() {
+            println!("Migration : {} clé(s) API hashée(s).", legacy.len());
+        }
+    }
+
     let backup_dir = std::path::Path::new(&db_path)
         .parent()
         .map(|p| p.join("backups").to_string_lossy().to_string())

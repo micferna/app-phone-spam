@@ -35,7 +35,7 @@ fn client_ip(h: &HeaderMap) -> String {
 fn header<'a>(h: &'a HeaderMap, name: &str) -> &'a str {
     h.get(name).and_then(|v| v.to_str().ok()).unwrap_or("")
 }
-fn sha256_hex(s: &str) -> String {
+pub(crate) fn sha256_hex(s: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(s.as_bytes());
@@ -82,8 +82,13 @@ fn escape_html(s: &str) -> String {
 // permettrait de bloquer un membre en spoofant son IP (DoS ciblé).
 async fn require_user(st: &AppState, h: &HeaderMap) -> Result<(i64, String), Resp> {
     let key = header(h, "x-api-key");
+    if key.is_empty() {
+        return Err(e(StatusCode::UNAUTHORIZED, "Clé API invalide"));
+    }
+    // Les clés sont stockées hashées (SHA-256) : une fuite de base n'expose
+    // pas de jetons réutilisables. Le client envoie toujours la clé en clair.
     let row: Option<(i64, String)> = sqlx::query_as("SELECT id, name FROM users WHERE api_key = ?")
-        .bind(key)
+        .bind(sha256_hex(key))
         .fetch_optional(&st.pool)
         .await
         .ok()
@@ -480,7 +485,7 @@ pub async fn bootstrap(
     let api_key = gen_key();
     sqlx::query("INSERT INTO users (name, api_key) VALUES (?, ?)")
         .bind(&name)
-        .bind(&api_key)
+        .bind(sha256_hex(&api_key))
         .execute(&st.pool)
         .await
         .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "erreur base"))?;
@@ -517,7 +522,7 @@ pub async fn create_user(
     let api_key = gen_key();
     let res = sqlx::query("INSERT INTO users (name, api_key) VALUES (?, ?)")
         .bind(&name)
-        .bind(&api_key)
+        .bind(sha256_hex(&api_key))
         .execute(&st.pool)
         .await;
     if res.is_err() {
@@ -650,7 +655,7 @@ pub async fn redeem_invite(
     // reste consommable puisque la transaction est annulée).
     if sqlx::query("INSERT INTO users (name, api_key) VALUES (?, ?)")
         .bind(&uname)
-        .bind(&api_key)
+        .bind(sha256_hex(&api_key))
         .execute(&mut *tx)
         .await
         .is_err()
@@ -862,7 +867,7 @@ pub async fn approve_join(
         .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
     sqlx::query("INSERT INTO users (name, api_key) VALUES (?, ?)")
         .bind(&name)
-        .bind(&api_key)
+        .bind(sha256_hex(&api_key))
         .execute(&mut *tx)
         .await
         .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
