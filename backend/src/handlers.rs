@@ -526,6 +526,62 @@ pub async fn create_user(
     ok(json!({ "name": name, "apiKey": api_key }))
 }
 
+// --- admin : lister les membres (sans les clés) ---
+pub async fn list_users(State(st): State<AppState>, headers: HeaderMap) -> ApiResult {
+    require_admin(&st, &headers).await?;
+    let rows: Vec<(i64, String, String, i64)> = sqlx::query_as(
+        "SELECT u.id, u.name, u.created_at, \
+         (SELECT COUNT(*) FROM reports r WHERE r.user_id = u.id) AS c \
+         FROM users u ORDER BY u.id",
+    )
+    .fetch_all(&st.pool)
+    .await
+    .unwrap_or_default();
+    ok(json!(rows
+        .iter()
+        .map(|(id, name, created, c)| json!({
+            "id": id, "name": name, "created_at": created, "reportCount": c
+        }))
+        .collect::<Vec<_>>()))
+}
+
+// --- admin : supprimer un membre + ses données (RGPD : erasure) ---
+pub async fn delete_user(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+) -> ApiResult {
+    require_admin(&st, &headers).await?;
+    let mut tx = st
+        .pool
+        .begin()
+        .await
+        .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
+    sqlx::query("DELETE FROM feedback WHERE user_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
+    sqlx::query("DELETE FROM reports WHERE user_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
+    let res = sqlx::query("DELETE FROM users WHERE id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
+    tx.commit()
+        .await
+        .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
+    let removed = res.rows_affected() > 0;
+    if removed {
+        st.rep_dirty.store(true, Ordering::Relaxed);
+    }
+    ok(json!({ "deleted": removed }))
+}
+
 // --- admin : créer une invitation à usage unique (onboarding QR) ---
 pub async fn create_invite(State(st): State<AppState>, headers: HeaderMap) -> ApiResult {
     require_admin(&st, &headers).await?;

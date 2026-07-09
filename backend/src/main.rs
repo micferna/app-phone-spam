@@ -109,7 +109,11 @@ async fn main() {
         .route("/api/federation/feed", get(handlers::federation_feed))
         .route("/api/stats", get(handlers::stats))
         .route("/api/export", get(handlers::export_db))
-        .route("/api/users", post(handlers::create_user))
+        .route(
+            "/api/users",
+            post(handlers::create_user).get(handlers::list_users),
+        )
+        .route("/api/users/{id}", delete(handlers::delete_user))
         .route("/api/invites", post(handlers::create_invite))
         .route("/api/invite/redeem", post(handlers::redeem_invite))
         .route("/api/update-lists", post(handlers::update_lists))
