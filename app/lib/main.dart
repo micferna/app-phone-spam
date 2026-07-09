@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import 'api.dart';
+import 'lookup.dart';
 import 'onboarding.dart';
 import 'settings.dart';
 
@@ -412,6 +413,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         title: Text(_tab == 0 ? 'Anti-Spam' : 'Historique'),
         actions: [
           IconButton(
+            icon: const Icon(Icons.search),
+            tooltip: 'Vérifier un numéro',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => LookupScreen(api: widget.api)),
+            ),
+          ),
+          IconButton(
             icon: const Icon(Icons.tune),
             tooltip: 'Réglages avancés',
             onPressed: () => Navigator.push(
@@ -688,6 +697,72 @@ class _HistoryTabState extends State<HistoryTab> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
+  /// Bandeau de stats perso : ce que l'app a géré depuis le début du mois.
+  Widget _statsHeader(List<Map<String, dynamic>> entries) {
+    final now = DateTime.now();
+    var handled = 0, sms = 0, reported = 0;
+    for (final e in entries) {
+      final ts = e['ts'];
+      if (ts is! int) continue;
+      final d = DateTime.fromMillisecondsSinceEpoch(ts);
+      if (d.year != now.year || d.month != now.month) continue;
+      final kind = '${e['kind'] ?? 'call'}';
+      final action = '${e['action']}';
+      final verdict = '${e['verdict']}';
+      if (kind == 'sms') {
+        sms++;
+      } else if (kind == 'report' || verdict == 'signalé') {
+        reported++;
+      } else if (action == 'bloqué' ||
+          action == 'silencié' ||
+          verdict == 'suspect') {
+        handled++;
+      }
+    }
+    final scheme = Theme.of(context).colorScheme;
+    Widget tile(String v, String label, IconData icon, Color c) => Expanded(
+          child: Card(
+            color: scheme.surfaceContainerHighest,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 8),
+              child: Column(
+                children: [
+                  Icon(icon, color: c, size: 22),
+                  const SizedBox(height: 6),
+                  Text(v,
+                      style: const TextStyle(
+                          fontSize: 22, fontWeight: FontWeight.bold)),
+                  Text(label,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                          fontSize: 11, color: scheme.onSurfaceVariant)),
+                ],
+              ),
+            ),
+          ),
+        );
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 4, bottom: 4),
+            child: Text('Ce mois-ci',
+                style: Theme.of(context).textTheme.titleSmall),
+          ),
+          Row(
+            children: [
+              tile('$handled', 'démarchages\ngérés', Icons.shield, Colors.green),
+              tile('$sms', 'SMS\nsuspects', Icons.sms_failed, Colors.orange),
+              tile('$reported', 'numéros\nsignalés', Icons.flag, scheme.error),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   ({IconData icon, Color color, String label}) _style(
       String kind, String verdict, String action) {
     if (kind == 'sms') {
@@ -745,20 +820,26 @@ class _HistoryTabState extends State<HistoryTab> with WidgetsBindingObserver {
         itemCount: entries.length + 1,
         itemBuilder: (context, i) {
           if (i == 0) {
-            return Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text('${entries.length} appel${entries.length > 1 ? 's' : ''}',
-                      style: Theme.of(context).textTheme.titleSmall),
-                  TextButton.icon(
-                    onPressed: _clear,
-                    icon: const Icon(Icons.delete_outline, size: 18),
-                    label: const Text('Vider'),
+            return Column(
+              children: [
+                _statsHeader(entries),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 0),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                          '${entries.length} événement${entries.length > 1 ? 's' : ''}',
+                          style: Theme.of(context).textTheme.titleSmall),
+                      TextButton.icon(
+                        onPressed: _clear,
+                        icon: const Icon(Icons.delete_outline, size: 18),
+                        label: const Text('Vider'),
+                      ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+              ],
             );
           }
           final e = entries[i - 1];

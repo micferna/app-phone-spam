@@ -41,6 +41,12 @@ class LookupResult {
   final String? importedLabel;
   final bool arcepDemarchage;
   final bool suspicious;
+  final int suspicionScore;
+  final bool campaignActive;
+  final String? operatorName;
+  final String lineType;
+  final String lineLabel;
+  final int lineRisk;
 
   LookupResult.fromJson(Map<String, dynamic> j)
       : number = j['number'] as String,
@@ -48,7 +54,13 @@ class LookupResult {
         categories = List<String>.from(j['categories'] ?? []),
         importedLabel = j['importedLabel'] as String?,
         arcepDemarchage = j['arcepDemarchage'] == true,
-        suspicious = j['suspicious'] == true;
+        suspicious = j['suspicious'] == true,
+        suspicionScore = (j['suspicionScore'] ?? 0) as int,
+        campaignActive = j['campaignActive'] == true,
+        operatorName = j['operatorName'] as String?,
+        lineType = (j['lineType'] ?? 'autre') as String,
+        lineLabel = (j['lineLabel'] ?? '') as String,
+        lineRisk = (j['lineRisk'] ?? 0) as int;
 }
 
 class GroupNumber {
