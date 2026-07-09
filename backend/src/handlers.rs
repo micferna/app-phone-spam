@@ -9,7 +9,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Json, Response};
 use serde_json::{json, Value};
 
-use crate::normalize::{is_arcep_demarchage, normalize_number};
+use crate::normalize::{classify_number, is_arcep_demarchage, normalize_number};
 use crate::sms::{analyze_sms, is_suspicious_sms};
 use crate::state::AppState;
 
@@ -242,10 +242,14 @@ pub async fn lookup(
         .as_deref()
         .map(|c| c.split(',').collect())
         .unwrap_or_default();
+    let (line_type, line_label, line_risk) = classify_number(&number);
     ok(json!({
         "number": number,
         "reportCount": count,
         "categories": categories,
+        "lineType": line_type,
+        "lineLabel": line_label,
+        "lineRisk": line_risk,
         "importedFrom": imported.as_ref().map(|x| &x.0),
         "importedLabel": imported.as_ref().and_then(|x| x.1.clone()),
         "arcepDemarchage": arcep,

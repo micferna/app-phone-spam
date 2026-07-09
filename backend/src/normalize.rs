@@ -42,6 +42,59 @@ pub fn is_arcep_demarchage(e164: &str) -> bool {
     ARCEP_PREFIXES.iter().any(|p| e164.starts_with(p))
 }
 
+/// Analyse déterministe d'un numéro E.164 (aucune donnée envoyée à un tiers) :
+/// renvoie (code, libellé lisible, indice de risque 0-3).
+/// Le risque n'est qu'une heuristique liée au *type* de ligne, pas un verdict.
+pub fn classify_number(e164: &str) -> (&'static str, String, u8) {
+    if is_arcep_demarchage(e164) {
+        return (
+            "demarchage",
+            "Plage réservée au démarchage (ARCEP)".into(),
+            3,
+        );
+    }
+    // Numéros français : +33 puis l'indicatif national (le 0 est retiré).
+    if let Some(rest) = e164.strip_prefix("+33") {
+        let d = rest.as_bytes().first().copied().unwrap_or(0);
+        return match d {
+            b'6' | b'7' => ("mobile", "Mobile".into(), 0),
+            b'9' => (
+                "voip",
+                "VoIP / non géographique (09) — fréquent en démarchage".into(),
+                2,
+            ),
+            b'8' => {
+                // 080x = gratuit/service ; 081x-089x = surtaxé.
+                let second = rest.as_bytes().get(1).copied().unwrap_or(0);
+                if second == b'0' {
+                    ("numero_vert", "Numéro vert / service (080)".into(), 1)
+                } else {
+                    ("surtaxe", "Numéro spécial surtaxé (08)".into(), 2)
+                }
+            }
+            b'1'..=b'5' => {
+                let zone = match d {
+                    b'1' => "Île-de-France",
+                    b'2' => "Nord-Ouest",
+                    b'3' => "Nord-Est",
+                    b'4' => "Sud-Est",
+                    _ => "Sud-Ouest",
+                };
+                ("fixe", format!("Fixe géographique · {zone}"), 0)
+            }
+            _ => ("autre", "Numéro français".into(), 0),
+        };
+    }
+    // Indicatif international non-FR.
+    let cc: String = e164
+        .chars()
+        .skip(1)
+        .take_while(|c| c.is_ascii_digit())
+        .take(3)
+        .collect();
+    ("etranger", format!("Numéro international (+{cc}…)"), 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
