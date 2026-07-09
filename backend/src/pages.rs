@@ -189,7 +189,7 @@ button{{font:inherit;font-weight:700;padding:13px 20px;border:none;border-radius
 // ---------------------------------------------------------------------------
 // Admin — dashboard
 // ---------------------------------------------------------------------------
-pub fn admin_dashboard_page(s: &serde_json::Value, key: &str) -> String {
+pub fn admin_dashboard_page(s: &serde_json::Value) -> String {
     let n = |k: &str| s.get(k).and_then(|v| v.as_i64()).unwrap_or(0);
 
     // Tuiles KPI (label, valeur, icône, accent?)
@@ -352,12 +352,10 @@ th{{color:var(--faint);font-weight:600;font-size:.78rem;text-transform:uppercase
 </div>
 
 <div class="bar-actions">
-  <form method="POST" action="/admin" style="display:inline">
-    <input type="hidden" name="key" value="{key}">
-    <button class="btn primary" type="submit">↻ Rafraîchir</button>
-  </form>
+  <a class="btn primary" href="/admin">↻ Rafraîchir</a>
   <span class="muted">Feedback : {fbs} spam · {fbo} légitime</span>
   <a class="btn" href="/">← Site public</a>
+  <a class="btn" href="/admin/logout">⎋ Se déconnecter</a>
 </div>
 </div></body></html>"#,
         base = BASE_CSS,
@@ -365,7 +363,6 @@ th{{color:var(--faint);font-weight:600;font-size:.78rem;text-transform:uppercase
         camps = camp_html,
         ops = ops_html,
         recent = recent,
-        key = escape_html(key),
         fbs = n("feedbackSpam"),
         fbo = n("feedbackLegit"),
     )

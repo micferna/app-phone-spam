@@ -1008,9 +1008,69 @@ async fn collect_stats(st: &AppState) -> Value {
     })
 }
 
-// --- dashboard admin (HTML, auth par clé via formulaire POST) ---
-pub async fn admin_login() -> Html<String> {
-    Html(crate::pages::admin_login_page(false))
+// --- dashboard admin (HTML) ---
+// Auth : la clé n'est saisie qu'à la connexion (POST). On émet alors un
+// cookie de session aléatoire (HttpOnly/Secure/SameSite=Strict) ; le
+// dashboard et son rafraîchissement s'appuient sur ce cookie. La clé admin
+// n'apparaît donc JAMAIS dans le HTML rendu.
+const ADMIN_SESSION_TTL: u64 = 8 * 3600; // 8 h
+
+fn now_secs() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn new_admin_session(st: &AppState) -> String {
+    let token = gen_key(); // 192 bits
+    let now = now_secs();
+    let mut m = st.sessions.lock().unwrap();
+    m.retain(|_, exp| *exp > now); // purge des sessions expirées
+    m.insert(token.clone(), now + ADMIN_SESSION_TTL);
+    token
+}
+
+fn cookie_token(h: &HeaderMap) -> Option<String> {
+    let raw = h.get("cookie")?.to_str().ok()?;
+    raw.split(';').find_map(|part| {
+        part.trim()
+            .strip_prefix("admin_session=")
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn admin_session_ok(st: &AppState, h: &HeaderMap) -> bool {
+    let Some(tok) = cookie_token(h) else {
+        return false;
+    };
+    let now = now_secs();
+    let mut m = st.sessions.lock().unwrap();
+    match m.get(&tok) {
+        Some(exp) if *exp > now => true,
+        Some(_) => {
+            m.remove(&tok);
+            false
+        }
+        None => false,
+    }
+}
+
+fn set_cookie(resp: &mut Response, value: &str) {
+    if let Ok(hv) = axum::http::HeaderValue::from_str(value) {
+        resp.headers_mut()
+            .append(axum::http::header::SET_COOKIE, hv);
+    }
+}
+
+pub async fn admin_login(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    if admin_session_ok(&st, &headers) {
+        let s = collect_stats(&st).await;
+        return Html(crate::pages::admin_dashboard_page(&s)).into_response();
+    }
+    Html(crate::pages::admin_login_page(false)).into_response()
 }
 
 pub async fn admin_dashboard(
@@ -1025,8 +1085,29 @@ pub async fn admin_dashboard(
         )
             .into_response();
     }
+    let token = new_admin_session(&st);
     let s = collect_stats(&st).await;
-    Html(crate::pages::admin_dashboard_page(&s, key)).into_response()
+    let mut resp = Html(crate::pages::admin_dashboard_page(&s)).into_response();
+    set_cookie(
+        &mut resp,
+        &format!(
+            "admin_session={token}; Max-Age={ADMIN_SESSION_TTL}; Path=/admin; \
+             HttpOnly; Secure; SameSite=Strict"
+        ),
+    );
+    resp
+}
+
+pub async fn admin_logout(State(st): State<AppState>, headers: HeaderMap) -> Response {
+    if let Some(tok) = cookie_token(&headers) {
+        st.sessions.lock().unwrap().remove(&tok);
+    }
+    let mut resp = Html(crate::pages::admin_login_page(false)).into_response();
+    set_cookie(
+        &mut resp,
+        "admin_session=; Max-Age=0; Path=/admin; HttpOnly; Secure; SameSite=Strict",
+    );
+    resp
 }
 
 // --- page d'accueil ---

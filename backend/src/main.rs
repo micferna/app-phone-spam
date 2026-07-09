@@ -56,6 +56,7 @@ async fn main() {
             &std::env::var("FEDERATION_PEERS").unwrap_or_default(),
         ),
         backup_dir,
+        sessions: Arc::new(Mutex::new(HashMap::new())),
     };
 
     // Sauvegarde quotidienne de la base (rotation 7 jours sur le volume).
@@ -121,6 +122,7 @@ async fn main() {
             "/admin",
             get(handlers::admin_login).post(handlers::admin_dashboard),
         )
+        .route("/admin/logout", get(handlers::admin_logout))
         .layer(DefaultBodyLimit::max(8192))
         .layer(middleware::from_fn_with_state(st.clone(), global_rate))
         .layer(middleware::from_fn(security_headers))

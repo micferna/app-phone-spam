@@ -30,6 +30,10 @@ pub struct AppState {
     pub federation_peers: Vec<String>,
     /// Dossier des sauvegardes quotidiennes.
     pub backup_dir: String,
+    /// Sessions admin actives : token de session -> expiration (epoch secondes).
+    /// En mémoire : une redéploiement invalide les sessions (l'admin se
+    /// reconnecte). Évite d'embarquer la clé admin dans le HTML du dashboard.
+    pub sessions: Arc<Mutex<HashMap<String, u64>>>,
 }
 
 impl AppState {
