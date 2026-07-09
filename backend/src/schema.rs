@@ -33,6 +33,7 @@ pub async fn init_pool(db_path: &str) -> Result<SqlitePool, sqlx::Error> {
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               name TEXT NOT NULL UNIQUE,
               api_key TEXT NOT NULL UNIQUE,
+              trusted INTEGER NOT NULL DEFAULT 1,
               created_at TEXT NOT NULL DEFAULT (datetime('now'))
            )"#,
         r#"CREATE TABLE IF NOT EXISTS reports (

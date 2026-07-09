@@ -291,6 +291,54 @@ pub fn admin_dashboard_page(s: &serde_json::Value) -> String {
         recent = "<tr><td colspan=3 class=\"muted\">—</td></tr>".into();
     }
 
+    // Catégories de signalement (chips ; catégorie saisie par l'utilisateur -> escape).
+    let mut cats_html = String::new();
+    if let Some(arr) = s.get("topCategories").and_then(|v| v.as_array()) {
+        for c in arr {
+            let cat = c.get("category").and_then(|v| v.as_str()).unwrap_or("");
+            let cnt = c.get("count").and_then(|v| v.as_i64()).unwrap_or(0);
+            cats_html.push_str(&format!(
+                "<span class=\"chip\">{} <b>{}</b></span>",
+                escape_html(cat),
+                cnt
+            ));
+        }
+    }
+    if cats_html.is_empty() {
+        cats_html = "<p class=\"muted\">Aucune catégorie renseignée.</p>".into();
+    }
+
+    // Membres + volume 24 h. Repère l'empoisonnement : un membre au volume
+    // anormal (≥ 30 signalements/24 h) est signalé ; un membre « douteux »
+    // (trusted = false) ne compte plus pour la protection du groupe.
+    let mut members_html = String::new();
+    if let Some(arr) = s.get("members").and_then(|v| v.as_array()) {
+        for m in arr {
+            let name = m.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            let trusted = m.get("trusted").and_then(|v| v.as_bool()).unwrap_or(true);
+            let total = m.get("total").and_then(|v| v.as_i64()).unwrap_or(0);
+            let d24 = m.get("reports24h").and_then(|v| v.as_i64()).unwrap_or(0);
+            let hot = d24 >= 30;
+            let flag = if !trusted {
+                " <span class=\"tag danger\">douteux — exclu</span>"
+            } else if hot {
+                " <span class=\"tag warn\">volume élevé</span>"
+            } else {
+                ""
+            };
+            members_html.push_str(&format!(
+                "<tr class=\"{cls}\"><td>{name}</td>\
+                 <td class=\"mono\">{d24}</td><td class=\"mono muted\">{total}</td>\
+                 <td>{flag}</td></tr>",
+                cls = if !trusted || hot { "hot" } else { "" },
+                name = escape_html(name),
+            ));
+        }
+    }
+    if members_html.is_empty() {
+        members_html = "<tr><td colspan=4 class=\"muted\">—</td></tr>".into();
+    }
+
     format!(
         r#"<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -330,6 +378,13 @@ th{{color:var(--faint);font-weight:600;font-size:.78rem;text-transform:uppercase
 .btn{{display:inline-flex;align-items:center;gap:8px;font:inherit;font-weight:600;padding:11px 18px;
   border:1px solid var(--border);border-radius:12px;background:var(--surface);color:var(--fg);cursor:pointer}}
 .btn.primary{{background:var(--grad);color:#fff;border:none}}
+.chips{{display:flex;flex-wrap:wrap;gap:8px}}
+.chip{{background:var(--surface2);border:1px solid var(--border);border-radius:999px;padding:6px 12px;font-size:.88rem}}
+.chip b{{margin-left:4px;font-variant-numeric:tabular-nums}}
+.tag{{font-size:.72rem;font-weight:600;padding:2px 9px;border-radius:999px;white-space:nowrap}}
+.tag.warn{{background:rgba(224,138,30,.16);color:var(--warn)}}
+.tag.danger{{background:rgba(214,64,47,.16);color:var(--danger)}}
+tr.hot td{{background:rgba(224,138,30,.07)}}
 </style></head><body><div class="wrap">
 <div class="top anim"><h1>📊 Dashboard</h1>
   <span class="live"><span class="dot"></span> données en direct</span></div>
@@ -347,6 +402,16 @@ th{{color:var(--faint);font-weight:600;font-size:.78rem;text-transform:uppercase
 </div>
 
 <div class="panel anim" style="animation-delay:.2s">
+  <h2>🏷️ Catégories signalées</h2>
+  <div class="chips">{cats}</div>
+</div>
+
+<div class="panel anim" style="animation-delay:.25s">
+  <h2>👥 Membres <span class="muted" style="font-weight:400;font-size:.85rem">— volume 24 h · repère l'empoisonnement</span></h2>
+  <table><tr><th>Membre</th><th>24 h</th><th>Total</th><th></th></tr>{members}</table>
+</div>
+
+<div class="panel anim" style="animation-delay:.3s">
   <h2>🕑 Signalements récents</h2>
   <table><tr><th>Numéro</th><th>Signalé</th><th>Dernier</th></tr>{recent}</table>
 </div>
@@ -362,6 +427,8 @@ th{{color:var(--faint);font-weight:600;font-size:.78rem;text-transform:uppercase
         kpis = kpi_html,
         camps = camp_html,
         ops = ops_html,
+        cats = cats_html,
+        members = members_html,
         recent = recent,
         fbs = n("feedbackSpam"),
         fbo = n("feedbackLegit"),

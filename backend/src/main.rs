@@ -61,6 +61,12 @@ async fn main() {
         }
     }
 
+    // Migration : colonne `trusted` (anti-empoisonnement) sur les bases héritées.
+    // Erreur « duplicate column » ignorée si la colonne existe déjà (idempotent).
+    let _ = sqlx::query("ALTER TABLE users ADD COLUMN trusted INTEGER NOT NULL DEFAULT 1")
+        .execute(&pool)
+        .await;
+
     let backup_dir = std::path::Path::new(&db_path)
         .parent()
         .map(|p| p.join("backups").to_string_lossy().to_string())
@@ -137,6 +143,7 @@ async fn main() {
             post(handlers::create_user).get(handlers::list_users),
         )
         .route("/api/users/{id}", delete(handlers::delete_user))
+        .route("/api/users/{id}/trust", post(handlers::set_trust))
         .route("/api/invites", post(handlers::create_invite))
         .route("/api/invite/redeem", post(handlers::redeem_invite))
         .route("/api/update-lists", post(handlers::update_lists))

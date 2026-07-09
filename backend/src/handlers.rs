@@ -157,11 +157,17 @@ pub async fn lookup(
     let number =
         normalize_number(&number).ok_or_else(|| e(StatusCode::BAD_REQUEST, "Numéro invalide"))?;
 
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM reports WHERE number = ?")
-        .bind(&number)
-        .fetch_one(&st.pool)
-        .await
-        .unwrap_or(0);
+    // Anti-empoisonnement : seuls les signalements de membres de confiance
+    // comptent pour la protection du groupe (un membre douteux ne peut pas
+    // faire bloquer un numéro pour tout le monde).
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM reports r JOIN users u ON u.id = r.user_id \
+         WHERE r.number = ? AND u.trusted = 1",
+    )
+    .bind(&number)
+    .fetch_one(&st.pool)
+    .await
+    .unwrap_or(0);
     let cats: Option<String> =
         sqlx::query_scalar("SELECT GROUP_CONCAT(DISTINCT category) FROM reports WHERE number = ?")
             .bind(&number)
@@ -347,8 +353,12 @@ pub async fn delete_report(
 
 pub async fn numbers(State(st): State<AppState>, headers: HeaderMap) -> ApiResult {
     require_user(&st, &headers).await?;
+    // Liste de blocage servie aux téléphones : uniquement les signalements
+    // des membres de confiance (anti-empoisonnement).
     let community: Vec<(String, i64, Option<String>)> = sqlx::query_as(
-        "SELECT number, COUNT(*) AS c, MAX(created_at) AS last FROM reports GROUP BY number",
+        "SELECT r.number, COUNT(*) AS c, MAX(r.created_at) AS last \
+         FROM reports r JOIN users u ON u.id = r.user_id \
+         WHERE u.trusted = 1 GROUP BY r.number",
     )
     .fetch_all(&st.pool)
     .await
@@ -534,20 +544,45 @@ pub async fn create_user(
 // --- admin : lister les membres (sans les clés) ---
 pub async fn list_users(State(st): State<AppState>, headers: HeaderMap) -> ApiResult {
     require_admin(&st, &headers).await?;
-    let rows: Vec<(i64, String, String, i64)> = sqlx::query_as(
-        "SELECT u.id, u.name, u.created_at, \
-         (SELECT COUNT(*) FROM reports r WHERE r.user_id = u.id) AS c \
-         FROM users u ORDER BY u.id",
+    let rows: Vec<(i64, String, String, i64, i64, i64)> = sqlx::query_as(
+        "SELECT u.id, u.name, u.created_at, u.trusted, \
+         (SELECT COUNT(*) FROM reports r WHERE r.user_id = u.id) AS total, \
+         (SELECT COUNT(*) FROM reports r WHERE r.user_id = u.id \
+            AND r.created_at > datetime('now','-1 day')) AS last24 \
+         FROM users u ORDER BY total DESC",
     )
     .fetch_all(&st.pool)
     .await
     .unwrap_or_default();
     ok(json!(rows
         .iter()
-        .map(|(id, name, created, c)| json!({
-            "id": id, "name": name, "created_at": created, "reportCount": c
+        .map(|(id, name, created, trusted, total, last24)| json!({
+            "id": id, "name": name, "created_at": created,
+            "trusted": *trusted != 0, "reportCount": total, "reports24h": last24
         }))
         .collect::<Vec<_>>()))
+}
+
+// --- admin : (dé)marquer un membre de confiance (anti-empoisonnement) ---
+pub async fn set_trust(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(body): Json<Value>,
+) -> ApiResult {
+    require_admin(&st, &headers).await?;
+    let trusted = body["trusted"].as_bool().unwrap_or(true);
+    let res = sqlx::query("UPDATE users SET trusted = ? WHERE id = ?")
+        .bind(if trusted { 1 } else { 0 })
+        .bind(id)
+        .execute(&st.pool)
+        .await
+        .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
+    if res.rows_affected() == 0 {
+        return Err(e(StatusCode::NOT_FOUND, "Membre introuvable"));
+    }
+    st.rep_dirty.store(true, Ordering::Relaxed);
+    ok(json!({ "id": id, "trusted": trusted }))
 }
 
 // --- admin : supprimer un membre + ses données (RGPD : erasure) ---
@@ -996,6 +1031,26 @@ async fn collect_stats(st: &AppState) -> Value {
     .fetch_all(&st.pool)
     .await
     .unwrap_or_default();
+    let categories: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT category, COUNT(*) AS c FROM reports \
+         WHERE category IS NOT NULL AND category <> '' \
+         GROUP BY category ORDER BY c DESC LIMIT 8",
+    )
+    .fetch_all(&st.pool)
+    .await
+    .unwrap_or_default();
+    // Membres + volume de signalements (24 h) : sert à repérer un
+    // empoisonnement (un membre qui signale anormalement).
+    let member_rows: Vec<(String, i64, i64, i64)> = sqlx::query_as(
+        "SELECT u.name, u.trusted, \
+         (SELECT COUNT(*) FROM reports r WHERE r.user_id = u.id) AS total, \
+         (SELECT COUNT(*) FROM reports r WHERE r.user_id = u.id \
+            AND r.created_at > datetime('now','-1 day')) AS last24 \
+         FROM users u ORDER BY last24 DESC, total DESC LIMIT 12",
+    )
+    .fetch_all(&st.pool)
+    .await
+    .unwrap_or_default();
 
     json!({
         "members": members,
@@ -1010,6 +1065,8 @@ async fn collect_stats(st: &AppState) -> Value {
         "topOperators": top_ops.iter().take(10).map(|(m,n,c)| json!({"mnemo":m,"name":n,"count":c})).collect::<Vec<_>>(),
         "activeCampaigns": campaigns.iter().map(|(p,c)| json!({"prefix":p,"count":c})).collect::<Vec<_>>(),
         "recentReports": recent.iter().map(|(n,c,l)| json!({"number":n,"reportCount":c,"lastReport":l})).collect::<Vec<_>>(),
+        "topCategories": categories.iter().map(|(cat,c)| json!({"category":cat,"count":c})).collect::<Vec<_>>(),
+        "members": member_rows.iter().map(|(name,trusted,total,last24)| json!({"name":name,"trusted":*trusted != 0,"total":total,"reports24h":last24})).collect::<Vec<_>>(),
     })
 }
 
