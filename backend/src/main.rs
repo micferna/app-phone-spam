@@ -173,6 +173,17 @@ async fn security_headers(req: Request, next: Next) -> Response {
             "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'self'",
         ),
     );
+    // Force TLS (anti-downgrade / SSL-strip) — 2 ans, sous-domaines inclus.
+    h.insert(
+        "Strict-Transport-Security",
+        HeaderValue::from_static("max-age=63072000; includeSubDomains"),
+    );
+    // Les réponses sont dynamiques et le dashboard admin contient un secret :
+    // on interdit toute mise en cache (navigateur, back/forward, proxys).
+    h.insert(
+        "Cache-Control",
+        HeaderValue::from_static("no-store, max-age=0"),
+    );
     res
 }
 
