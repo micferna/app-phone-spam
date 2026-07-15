@@ -230,9 +230,7 @@ démarchage (décision 2022-1583 : 0162, 0163, 0270, 0271, 0377, 0378, 0424,
   catégorie** (filtrer VoIP 09 / international / surtaxé 08, décision locale
   hors-ligne, suit le mode de filtrage) et **whitelist** manuelle de numéros.
 - **Historique actionnable** : appuyer sur un appel du journal permet de le
-  **signaler au groupe** ou de l'**ajouter à la whitelist** en un geste. L'app
-  propose aussi d'**exempter l'optimisation batterie** (fiabilise la synchro du
-  cache hors-ligne en arrière-plan).
+  **signaler au groupe** ou de l'**ajouter à la whitelist** en un geste.
 
 ### Identification de l'opérateur (open data ARCEP MAJNUM)
 

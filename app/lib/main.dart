@@ -233,7 +233,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   List<String> _campaigns = [];
   String? _updateTag; // version plus récente dispo, sinon null
   bool _fsiGranted = true; // autorisation « notifications plein écran » (Android 14+)
-  bool _batteryExempt = true; // exemption d'optimisation batterie
   final _historyKey = GlobalKey<_HistoryTabState>();
 
   static const _modeHelp = {
@@ -251,7 +250,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _refreshRole();
     _checkFsi();
-    _checkBattery();
     _refreshList();
     _refreshCampaigns();
     _checkUpdate();
@@ -310,7 +308,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       _refreshRole();
       _checkFsi();
-      _checkBattery();
     }
   }
 
@@ -340,24 +337,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _requestFsi() async {
     try {
       await _native.invokeMethod('requestFullScreenIntent');
-    } catch (_) {}
-    // Le retour depuis les réglages déclenchera didChangeAppLifecycleState.
-  }
-
-  // Exemption d'optimisation batterie : sans elle, Android peut retarder le
-  // rafraîchissement en arrière-plan du cache de numéros (repli hors-ligne).
-  Future<void> _checkBattery() async {
-    try {
-      final ok = await _native.invokeMethod<bool>('isBatteryExempt') ?? true;
-      if (mounted) setState(() => _batteryExempt = ok);
-    } catch (_) {
-      if (mounted) setState(() => _batteryExempt = true);
-    }
-  }
-
-  Future<void> _requestBattery() async {
-    try {
-      await _native.invokeMethod('requestBatteryExemption');
     } catch (_) {}
     // Le retour depuis les réglages déclenchera didChangeAppLifecycleState.
   }
@@ -620,23 +599,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   trailing: FilledButton(
                     onPressed: _requestFsi,
                     child: const Text('Autoriser'),
-                  ),
-                ),
-              ),
-            if (_roleHeld && !_batteryExempt)
-              Card(
-                color: scheme.tertiaryContainer,
-                child: ListTile(
-                  leading: const Icon(Icons.battery_alert),
-                  title: const Text('Optimisation batterie active'),
-                  subtitle: const Text(
-                      'Android peut retarder la synchro de la liste de numéros '
-                      'en arrière-plan. Exempte l\'app pour un repli hors-ligne '
-                      'toujours à jour.'),
-                  isThreeLine: true,
-                  trailing: FilledButton(
-                    onPressed: _requestBattery,
-                    child: const Text('Régler'),
                   ),
                 ),
               ),

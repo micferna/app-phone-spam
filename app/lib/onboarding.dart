@@ -144,6 +144,20 @@ class _ScanInviteScreenState extends State<ScanInviteScreen> {
     } catch (_) {
       return; // pas un QR d'invitation
     }
+    // Le QR est le bootstrap de confiance : on refuse toute URL non https
+    // (sinon un QR hostile détournerait prénom + token, puis tous les lookups
+    // — numéros des appelants — vers le serveur de l'attaquant).
+    final url = '${payload['url']}';
+    if (!url.startsWith('https://')) {
+      setState(() => _handling = true);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('Invitation refusée : le serveur doit être en HTTPS.'),
+        ));
+      }
+      setState(() => _handling = false);
+      return;
+    }
     setState(() => _handling = true);
 
     final name = await _askName();
@@ -152,10 +166,9 @@ class _ScanInviteScreenState extends State<ScanInviteScreen> {
       return;
     }
     try {
-      final key = await ApiClient.redeemInvite(
-          '${payload['url']}', '${payload['invite']}', name);
+      final key = await ApiClient.redeemInvite(url, '${payload['invite']}', name);
       if (mounted) {
-        Navigator.pop(context, {'url': '${payload['url']}', 'key': key});
+        Navigator.pop(context, {'url': url, 'key': key});
       }
     } catch (e) {
       if (mounted) {
