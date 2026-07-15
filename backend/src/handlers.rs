@@ -844,6 +844,23 @@ pub async fn bulk_import(
     ok(json!({ "added": added, "skipped": skipped }))
 }
 
+// --- admin : retirer un numéro de la blocklist importée (faux positif) ---
+pub async fn delete_imported(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Path(number): Path<String>,
+) -> ApiResult {
+    require_admin(&st, &headers).await?;
+    let number =
+        normalize_number(&number).ok_or_else(|| e(StatusCode::BAD_REQUEST, "Numéro invalide"))?;
+    let res = sqlx::query("DELETE FROM imported_numbers WHERE number = ?")
+        .bind(&number)
+        .execute(&st.pool)
+        .await
+        .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
+    ok(json!({ "number": number, "removed": res.rows_affected() }))
+}
+
 // --- admin : forcer la mise à jour des listes ---
 pub async fn update_lists(State(st): State<AppState>, headers: HeaderMap) -> ApiResult {
     require_admin(&st, &headers).await?;

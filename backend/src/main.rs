@@ -133,6 +133,7 @@ async fn main() {
         .route("/api/reports", post(handlers::create_report))
         .route("/api/reports/bulk", post(handlers::bulk_import))
         .route("/api/reports/{number}", delete(handlers::delete_report))
+        .route("/api/imported/{number}", delete(handlers::delete_imported))
         .route("/api/lookup/{number}", get(handlers::lookup))
         .route("/api/numbers", get(handlers::numbers))
         .route("/api/operators", get(handlers::operators))
