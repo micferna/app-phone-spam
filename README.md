@@ -226,8 +226,9 @@ démarchage (décision 2022-1583 : 0162, 0163, 0270, 0271, 0377, 0378, 0424,
   release GitHub) dans l'app.
 - **Réglages avancés** : « ne pas déranger la nuit » (silence des appels
   suspects sur une plage horaire), **filtrage des numéros masqués** (sonner /
-  silencier / bloquer les appels anonymes, décision 100 % locale) et
-  **whitelist** manuelle de numéros.
+  silencier / bloquer les appels anonymes, décision 100 % locale), **règles par
+  catégorie** (filtrer VoIP 09 / international / surtaxé 08, décision locale
+  hors-ligne, suit le mode de filtrage) et **whitelist** manuelle de numéros.
 
 ### Identification de l'opérateur (open data ARCEP MAJNUM)
 

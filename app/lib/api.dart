@@ -19,6 +19,10 @@ const kPrefNightStart = 'night_start'; // int heure (défaut 21)
 const kPrefNightEnd = 'night_end'; // int heure (défaut 8)
 const kPrefHiddenMode = 'hidden_mode'; // ring | silence | block — numéros masqués
 const kPrefAutoReport = 'auto_report'; // bool (défaut true) — signaler les blocages au groupe
+// Règles par catégorie de ligne (bool, défaut false), décision locale.
+const kPrefBlockVoip = 'block_voip'; // VoIP / non-géographique (09)
+const kPrefBlockIntl = 'block_intl'; // numéros internationaux
+const kPrefBlockPremium = 'block_premium'; // surtaxés (08x, hors 080 vert)
 
 const kRepoSlug = 'micferna/app-phone-spam';
 

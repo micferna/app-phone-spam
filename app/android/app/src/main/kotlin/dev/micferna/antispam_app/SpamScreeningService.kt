@@ -82,6 +82,10 @@ class SpamScreeningService : CallScreeningService() {
         // injoignable / réseau lent (ces numéros 0270…, 0568…, 0948… SONT du
         // démarchage par définition, pas besoin du serveur pour le savoir).
         val arcepLocal = isArcepDemarchage(number)
+        // Règles par catégorie (VoIP 09 / international / surtaxé 08) : décision
+        // locale selon les interrupteurs de réglages. Non-null = catégorie
+        // filtrée par l'utilisateur → traitée comme suspecte selon le mode.
+        val categoryLabel = blockedCategoryLabel(number, prefs)
 
         if (mode == "alert") {
             // Ne jamais retarder la sonnerie : on laisse passer tout de
@@ -98,6 +102,11 @@ class SpamScreeningService : CallScreeningService() {
                     json == null && arcepLocal -> {
                         notifySuspicious(arcepJson(number), mode)
                         logHistory(number, "suspect", "alerte (ARCEP local)", "")
+                    }
+                    // Règle de catégorie de l'utilisateur (VoIP/international/surtaxé).
+                    categoryLabel != null -> {
+                        notifySuspicious(localJson(number, categoryLabel), mode)
+                        logHistory(number, "suspect", "alerte (catégorie)", "")
                     }
                     else -> {
                         notifyUnknown(json?.optString("number", number) ?: number)
@@ -116,6 +125,7 @@ class SpamScreeningService : CallScreeningService() {
             // même si le backend est injoignable au moment de l'appel.
             val suspicious = json?.optBoolean("suspicious") == true ||
                 arcepLocal ||
+                categoryLabel != null ||
                 (json == null && cachedSuspicious(prefs, number))
             val response = when {
                 !suspicious -> CallResponse.Builder().build()
@@ -137,16 +147,19 @@ class SpamScreeningService : CallScreeningService() {
             when {
                 json != null && json.optBoolean("suspicious") -> notifySuspicious(json, mode)
                 suspicious && arcepLocal -> notifySuspicious(arcepJson(number), mode)
+                suspicious && categoryLabel != null ->
+                    notifySuspicious(localJson(number, categoryLabel), mode)
                 !suspicious -> notifyUnknown(json?.optString("number", number) ?: number)
             }
             logHistory(number, verdict, action, json?.let { operatorLabel(it) } ?: "")
-            // Auto-signalement : le numéro qu'on vient de bloquer/silencier est
-            // remonté au groupe (nourrit campagne + réputation). Désactivable
-            // (flutter.auto_report). On ne remonte QUE les numéros encore
-            // inconnus du groupe (reportCount 0 ou serveur muet) pour éviter le
-            // bruit et les doublons.
+            // Auto-signalement : on ne remonte au groupe QUE des signaux objectifs
+            // (plage ARCEP ou verdict serveur), encore inconnus (reportCount 0).
+            // Un blocage « catégorie perso » (VoIP/international/surtaxé) ou issu
+            // du cache n'est PAS remonté, pour ne pas polluer le groupe avec des
+            // préférences individuelles. Désactivable (flutter.auto_report).
             val known = json?.optInt("reportCount", 0) ?: 0
-            if (suspicious && known == 0 && prefs.getBoolean("flutter.auto_report", true)) {
+            val objectiveSpam = arcepLocal || json?.optBoolean("suspicious") == true
+            if (objectiveSpam && known == 0 && prefs.getBoolean("flutter.auto_report", true)) {
                 autoReport(serverUrl, apiKey, number, if (arcepLocal) "demarchage" else "auto")
             }
         }
@@ -230,6 +243,41 @@ class SpamScreeningService : CallScreeningService() {
         .put("arcepDemarchage", true)
         .put("suspicious", true)
         .put("reportCount", 0)
+
+    /// JSON minimal pour notifier un blocage décidé localement avec un motif
+    /// personnalisé (repris par notifySuspicious via `importedLabel`).
+    private fun localJson(number: String, label: String): JSONObject = JSONObject()
+        .put("number", number)
+        .put("suspicious", true)
+        .put("reportCount", 0)
+        .put("importedLabel", label)
+
+    /// Règles par catégorie de ligne (réglages), en local. Renvoie le motif si
+    /// la catégorie du numéro est filtrée par l'utilisateur, sinon null.
+    private fun blockedCategoryLabel(
+        number: String,
+        prefs: android.content.SharedPreferences,
+    ): String? {
+        val e = toE164(number)
+        if (!e.startsWith("+33") && e.startsWith("+") &&
+            prefs.getBoolean("flutter.block_intl", false)
+        ) {
+            return "Appel international — filtré selon tes réglages"
+        }
+        if (e.startsWith("+33")) {
+            when (e.getOrNull(3)) {
+                '9' -> if (prefs.getBoolean("flutter.block_voip", false)) {
+                    return "Numéro VoIP / non géographique (09) — filtré"
+                }
+                '8' -> if (e.getOrNull(4) != '0' &&
+                    prefs.getBoolean("flutter.block_premium", false)
+                ) {
+                    return "Numéro surtaxé (08) — filtré"
+                }
+            }
+        }
+        return null
+    }
 
     private fun operatorLabel(json: JSONObject): String {
         val name = if (json.isNull("operatorName")) "" else json.optString("operatorName", "")

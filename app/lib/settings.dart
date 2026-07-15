@@ -18,6 +18,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   int _start = 21;
   int _end = 8;
   String _hiddenMode = 'ring'; // ring | silence | block
+  bool _blockVoip = false;
+  bool _blockIntl = false;
+  bool _blockPremium = false;
   List<String> _whitelist = [];
   final _add = TextEditingController();
 
@@ -31,6 +34,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _start = p.getInt(kPrefNightStart) ?? 21;
         _end = p.getInt(kPrefNightEnd) ?? 8;
         _hiddenMode = p.getString(kPrefHiddenMode) ?? 'ring';
+        _blockVoip = p.getBool(kPrefBlockVoip) ?? false;
+        _blockIntl = p.getBool(kPrefBlockIntl) ?? false;
+        _blockPremium = p.getBool(kPrefBlockPremium) ?? false;
         final raw = p.getString(kPrefWhitelist);
         if (raw != null) {
           _whitelist = (jsonDecode(raw) as List).map((e) => '$e').toList();
@@ -61,6 +67,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _saveHidden() async {
     final p = await _prefs;
     await p.setString(kPrefHiddenMode, _hiddenMode);
+  }
+
+  Future<void> _saveCategories() async {
+    final p = await _prefs;
+    await p.setBool(kPrefBlockVoip, _blockVoip);
+    await p.setBool(kPrefBlockIntl, _blockIntl);
+    await p.setBool(kPrefBlockPremium, _blockPremium);
   }
 
   void _addNumber() {
@@ -137,6 +150,39 @@ class _SettingsScreenState extends State<SettingsScreen> {
               setState(() => _hiddenMode = s.first);
               _saveHidden();
             },
+          ),
+          const Divider(height: 32),
+          Text('Filtrer par catégorie',
+              style: Theme.of(context).textTheme.titleMedium),
+          const Text(
+              'Filtre ces catégories selon ton mode (alerte / silence / '
+              'blocage). Décision locale, valable même hors-ligne.'),
+          SwitchListTile(
+            value: _blockVoip,
+            onChanged: (v) {
+              setState(() => _blockVoip = v);
+              _saveCategories();
+            },
+            title: const Text('Numéros VoIP (09)'),
+            subtitle: const Text('Non géographiques, fréquents en démarchage.'),
+          ),
+          SwitchListTile(
+            value: _blockIntl,
+            onChanged: (v) {
+              setState(() => _blockIntl = v);
+              _saveCategories();
+            },
+            title: const Text('Appels internationaux'),
+            subtitle: const Text('Tout numéro hors +33.'),
+          ),
+          SwitchListTile(
+            value: _blockPremium,
+            onChanged: (v) {
+              setState(() => _blockPremium = v);
+              _saveCategories();
+            },
+            title: const Text('Numéros surtaxés (08)'),
+            subtitle: const Text('Hors 080x (numéros verts gratuits).'),
           ),
           const Divider(height: 32),
           Text('Numéros toujours autorisés (whitelist)',
