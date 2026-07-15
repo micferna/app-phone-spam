@@ -244,7 +244,13 @@ pub async fn lookup(
     // fixe local légitime.
     let hard = count > 0 || imported.is_some() || arcep;
     let member_cleared = fb_ok > fb_spam && fb_ok > 0;
-    let suspicious = is_suspicious(hard, campaign, score, st.block_score_threshold, member_cleared);
+    let suspicious = is_suspicious(
+        hard,
+        campaign,
+        score,
+        st.block_score_threshold,
+        member_cleared,
+    );
 
     let categories: Vec<&str> = cats
         .as_deref()
