@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import io.flutter.embedding.android.FlutterActivity
@@ -126,6 +127,30 @@ class MainActivity : FlutterActivity() {
                                     android.net.Uri.parse(url)
                                 ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                             )
+                        }
+                        result.success(null)
+                    }
+                    // --- Exemption d'optimisation batterie (fiabilise le
+                    // rafraîchissement du cache hors-ligne en arrière-plan) ---
+                    "isBatteryExempt" -> {
+                        val pm = getSystemService(PowerManager::class.java)
+                        result.success(pm.isIgnoringBatteryOptimizations(packageName))
+                    }
+                    "requestBatteryExemption" -> {
+                        try {
+                            startActivity(
+                                Intent(
+                                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                                    Uri.parse("package:$packageName")
+                                )
+                            )
+                        } catch (_: Exception) {
+                            try {
+                                startActivity(
+                                    Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                                )
+                            } catch (_: Exception) {
+                            }
                         }
                         result.success(null)
                     }

@@ -8,6 +8,8 @@
     <uses-permission android:name="android.permission.CAMERA"/>
     <!-- Mise à jour intégrée : installer l'APK téléchargé depuis GitHub -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+    <!-- Fiabiliser le rafraîchissement du cache hors-ligne en arrière-plan -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
     <application
         android:label="Anti-Spam"
         android:name="${applicationName}"

@@ -233,6 +233,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   List<String> _campaigns = [];
   String? _updateTag; // version plus récente dispo, sinon null
   bool _fsiGranted = true; // autorisation « notifications plein écran » (Android 14+)
+  bool _batteryExempt = true; // exemption d'optimisation batterie
   final _historyKey = GlobalKey<_HistoryTabState>();
 
   static const _modeHelp = {
@@ -250,6 +251,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _refreshRole();
     _checkFsi();
+    _checkBattery();
     _refreshList();
     _refreshCampaigns();
     _checkUpdate();
@@ -308,6 +310,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       _refreshRole();
       _checkFsi();
+      _checkBattery();
     }
   }
 
@@ -337,6 +340,24 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _requestFsi() async {
     try {
       await _native.invokeMethod('requestFullScreenIntent');
+    } catch (_) {}
+    // Le retour depuis les réglages déclenchera didChangeAppLifecycleState.
+  }
+
+  // Exemption d'optimisation batterie : sans elle, Android peut retarder le
+  // rafraîchissement en arrière-plan du cache de numéros (repli hors-ligne).
+  Future<void> _checkBattery() async {
+    try {
+      final ok = await _native.invokeMethod<bool>('isBatteryExempt') ?? true;
+      if (mounted) setState(() => _batteryExempt = ok);
+    } catch (_) {
+      if (mounted) setState(() => _batteryExempt = true);
+    }
+  }
+
+  Future<void> _requestBattery() async {
+    try {
+      await _native.invokeMethod('requestBatteryExemption');
     } catch (_) {}
     // Le retour depuis les réglages déclenchera didChangeAppLifecycleState.
   }
@@ -602,6 +623,23 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   ),
                 ),
               ),
+            if (_roleHeld && !_batteryExempt)
+              Card(
+                color: scheme.tertiaryContainer,
+                child: ListTile(
+                  leading: const Icon(Icons.battery_alert),
+                  title: const Text('Optimisation batterie active'),
+                  subtitle: const Text(
+                      'Android peut retarder la synchro de la liste de numéros '
+                      'en arrière-plan. Exempte l\'app pour un repli hors-ligne '
+                      'toujours à jour.'),
+                  isThreeLine: true,
+                  trailing: FilledButton(
+                    onPressed: _requestBattery,
+                    child: const Text('Régler'),
+                  ),
+                ),
+              ),
             const SizedBox(height: 16),
             Text('Que faire des appels suspects ?',
                 style: Theme.of(context).textTheme.titleMedium),
@@ -766,6 +804,76 @@ class _HistoryTabState extends State<HistoryTab> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
+  // Appui sur une entrée : actions rapides (signaler au groupe / whitelister).
+  // Ignoré pour les entrées sans vrai numéro (ex. « Masqué »).
+  Future<void> _showActions(String number) async {
+    if (number.isEmpty || number == 'Masqué') return;
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              dense: true,
+              title: Text(number,
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+            ),
+            ListTile(
+              leading: Icon(Icons.report,
+                  color: Theme.of(ctx).colorScheme.error),
+              title: const Text('Signaler comme spam'),
+              subtitle: const Text('Remonté au groupe'),
+              onTap: () => Navigator.pop(ctx, 'report'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.verified_user, color: Colors.green),
+              title: const Text('Ajouter à la whitelist'),
+              subtitle: const Text('Ne plus jamais filtrer ce numéro'),
+              onTap: () => Navigator.pop(ctx, 'whitelist'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (action == 'report') await _reportNumber(number);
+    if (action == 'whitelist') await _whitelistNumber(number);
+  }
+
+  Future<void> _reportNumber(String number) async {
+    try {
+      final count = await widget.api.report(number, category: 'démarchage');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+              'Signalé — $count signalement${count > 1 ? 's' : ''} au total.'),
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$e')));
+      }
+    }
+  }
+
+  Future<void> _whitelistNumber(String number) async {
+    final p = await SharedPreferences.getInstance();
+    final raw = p.getString(kPrefWhitelist);
+    final list = raw != null
+        ? (jsonDecode(raw) as List).map((e) => '$e').toList()
+        : <String>[];
+    if (!list.contains(number)) {
+      list.add(number);
+      await p.setString(kPrefWhitelist, jsonEncode(list));
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('$number ajouté à la whitelist.')),
+      );
+    }
+  }
+
   /// Bandeau de stats perso : ce que l'app a géré depuis le début du mois.
   Widget _statsHeader(List<Map<String, dynamic>> entries) {
     final now = DateTime.now();
@@ -917,6 +1025,7 @@ class _HistoryTabState extends State<HistoryTab> with WidgetsBindingObserver {
           final number = '${e['number']}';
           final isSuspect = '${e['verdict']}' == 'suspect';
           return ListTile(
+            onTap: () => _showActions(number),
             leading: Icon(st.icon, color: st.color),
             title: Text(number),
             subtitle: Text([
