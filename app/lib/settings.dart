@@ -16,6 +16,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _night = false;
   int _start = 21;
   int _end = 8;
+  String _hiddenMode = 'ring'; // ring | silence | block
   List<String> _whitelist = [];
   final _add = TextEditingController();
 
@@ -27,6 +28,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         _night = p.getBool(kPrefNightSilence) ?? false;
         _start = p.getInt(kPrefNightStart) ?? 21;
         _end = p.getInt(kPrefNightEnd) ?? 8;
+        _hiddenMode = p.getString(kPrefHiddenMode) ?? 'ring';
         final raw = p.getString(kPrefWhitelist);
         if (raw != null) {
           _whitelist = (jsonDecode(raw) as List).map((e) => '$e').toList();
@@ -47,6 +49,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _saveWhitelist() async {
     final p = await _prefs;
     await p.setString(kPrefWhitelist, jsonEncode(_whitelist));
+  }
+
+  Future<void> _saveHidden() async {
+    final p = await _prefs;
+    await p.setString(kPrefHiddenMode, _hiddenMode);
   }
 
   void _addNumber() {
@@ -94,6 +101,24 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ],
               ),
             ),
+          const Divider(height: 32),
+          Text('Numéros masqués',
+              style: Theme.of(context).textTheme.titleMedium),
+          const Text(
+              'Appels en numéro masqué / anonyme (aucun identifiant transmis).'),
+          const SizedBox(height: 8),
+          SegmentedButton<String>(
+            segments: const [
+              ButtonSegment(value: 'ring', label: Text('Sonner')),
+              ButtonSegment(value: 'silence', label: Text('Silence')),
+              ButtonSegment(value: 'block', label: Text('Bloquer')),
+            ],
+            selected: {_hiddenMode},
+            onSelectionChanged: (s) {
+              setState(() => _hiddenMode = s.first);
+              _saveHidden();
+            },
+          ),
           const Divider(height: 32),
           Text('Numéros toujours autorisés (whitelist)',
               style: Theme.of(context).textTheme.titleMedium),

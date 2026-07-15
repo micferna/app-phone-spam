@@ -17,6 +17,7 @@ const kPrefWhitelist = 'whitelist'; // tableau JSON de numéros jamais filtrés
 const kPrefNightSilence = 'night_silence'; // bool — silence la nuit
 const kPrefNightStart = 'night_start'; // int heure (défaut 21)
 const kPrefNightEnd = 'night_end'; // int heure (défaut 8)
+const kPrefHiddenMode = 'hidden_mode'; // ring | silence | block — numéros masqués
 
 const kRepoSlug = 'micferna/app-phone-spam';
 

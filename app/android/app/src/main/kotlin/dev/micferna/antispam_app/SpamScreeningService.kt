@@ -11,6 +11,7 @@ import android.net.Uri
 import android.provider.ContactsContract
 import android.telecom.Call
 import android.telecom.CallScreeningService
+import android.telecom.TelecomManager
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -42,6 +43,28 @@ class SpamScreeningService : CallScreeningService() {
         // « Ne pas déranger la nuit » : les appels suspects sont silenciés la
         // nuit même en mode Alerter.
         val mode = if (chosenMode == "alert" && nightSilenceActive(prefs)) "silence" else chosenMode
+
+        // Numéro masqué / anonyme : décision purement locale (aucun numéro à
+        // interroger). Réglage `hidden_mode` : ring (défaut) | silence | block.
+        val presentation = callDetails.handlePresentation
+        val hidden = number.isNullOrBlank() ||
+            presentation == TelecomManager.PRESENTATION_RESTRICTED ||
+            presentation == TelecomManager.PRESENTATION_UNKNOWN
+        if (hidden) {
+            val hiddenMode = prefs.getString("flutter.hidden_mode", "ring") ?: "ring"
+            val response = when (hiddenMode) {
+                "block" -> CallResponse.Builder().setDisallowCall(true).setRejectCall(true).build()
+                "silence" -> CallResponse.Builder().setSilenceCall(true).build()
+                else -> CallResponse.Builder().build()
+            }
+            respondToCall(callDetails, response)
+            if (hiddenMode != "ring") {
+                val action = if (hiddenMode == "block") "bloqué" else "silencié"
+                logHistory("Masqué", "masqué", action, "")
+                notifyHidden(hiddenMode)
+            }
+            return
+        }
 
         if (number == null || serverUrl == null || apiKey == null) {
             respondToCall(callDetails, CallResponse.Builder().build())
@@ -288,6 +311,19 @@ class SpamScreeningService : CallScreeningService() {
             .setAutoCancel(true)
             .build()
         getSystemService(NotificationManager::class.java).notify(number.hashCode(), notif)
+    }
+
+    private fun notifyHidden(mode: String) {
+        val title =
+            if (mode == "block") "⛔ Appel masqué bloqué" else "🔇 Appel masqué silencié"
+        val chan = channel(CHANNEL_ALERT, "Alertes spam", NotificationManager.IMPORTANCE_HIGH)
+        val notif = Notification.Builder(this, chan)
+            .setSmallIcon(android.R.drawable.stat_sys_warning)
+            .setContentTitle(title)
+            .setContentText("Numéro masqué / anonyme filtré selon tes réglages.")
+            .setAutoCancel(true)
+            .build()
+        getSystemService(NotificationManager::class.java).notify("hidden".hashCode(), notif)
     }
 
     private fun notifyUnknown(number: String) {
