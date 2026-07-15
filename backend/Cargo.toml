@@ -1,6 +1,6 @@
 [package]
 name = "phone-spam-backend"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "Backend communautaire de signalement de numéros spam (Rust)"
 
