@@ -9,6 +9,10 @@ pub async fn init_pool(db_path: &str) -> Result<SqlitePool, sqlx::Error> {
     let opts = SqliteConnectOptions::from_str(&format!("sqlite://{db_path}"))?
         .create_if_missing(true)
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+        // Avec WAL, NORMAL est le réglage recommandé : durabilité préservée
+        // (hors crash OS au checkpoint), moins de fsync sur les écritures →
+        // fenêtres de contention plus courtes pour les lectures (lookups).
+        .synchronous(sqlx::sqlite::SqliteSynchronous::Normal)
         .disable_statement_logging();
 
     let pool = SqlitePoolOptions::new()

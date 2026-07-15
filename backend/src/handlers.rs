@@ -120,9 +120,13 @@ async fn require_admin(st: &AppState, h: &HeaderMap) -> Result<(), Resp> {
     }
 }
 
-async fn reputation_map(st: &AppState) -> HashMap<String, i64> {
+/// Réputation d'UN opérateur (nb de numéros signalés qui lui appartiennent).
+/// Chemin chaud du lookup : on lit la seule valeur utile sous le verrou au lieu
+/// de cloner toute la HashMap à chaque appel. Recompute complet seulement quand
+/// le cache est invalidé (signalement/trust/suppression).
+async fn op_reputation(st: &AppState, mnemo: &str) -> i64 {
     if !st.rep_dirty.load(Ordering::Relaxed) {
-        return st.rep.lock().unwrap().clone();
+        return st.rep.lock().unwrap().get(mnemo).copied().unwrap_or(0);
     }
     let numbers: Vec<String> = sqlx::query_scalar("SELECT DISTINCT number FROM reports")
         .fetch_all(&st.pool)
@@ -133,9 +137,10 @@ async fn reputation_map(st: &AppState) -> HashMap<String, i64> {
         idx.reputation(&numbers)
     };
     let map: HashMap<String, i64> = rep_list.into_iter().map(|(m, _n, c)| (m, c)).collect();
-    *st.rep.lock().unwrap() = map.clone();
+    let val = map.get(mnemo).copied().unwrap_or(0);
+    *st.rep.lock().unwrap() = map;
     st.rep_dirty.store(false, Ordering::Relaxed);
-    map
+    val
 }
 
 // ===================== endpoints =====================
@@ -157,23 +162,50 @@ pub async fn lookup(
     let number =
         normalize_number(&number).ok_or_else(|| e(StatusCode::BAD_REQUEST, "Numéro invalide"))?;
 
-    // Anti-empoisonnement : seuls les signalements de membres de confiance
-    // comptent pour la protection du groupe (un membre douteux ne peut pas
-    // faire bloquer un numéro pour tout le monde).
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM reports r JOIN users u ON u.id = r.user_id \
-         WHERE r.number = ? AND u.trusted = 1",
-    )
-    .bind(&number)
-    .fetch_one(&st.pool)
-    .await
-    .unwrap_or(0);
-    let cats: Option<String> =
-        sqlx::query_scalar("SELECT GROUP_CONCAT(DISTINCT category) FROM reports WHERE number = ?")
-            .bind(&number)
-            .fetch_one(&st.pool)
-            .await
-            .unwrap_or(None);
+    // Plage du préfixe (6 premiers caractères) pour la détection de campagne,
+    // exprimée en RANGE indexable [prefix, prefix_upper) plutôt qu'en
+    // `LIKE prefix||'%'` (qui force un scan de l'index).
+    let prefix: String = number.chars().take(6).collect();
+    let prefix_upper = {
+        let mut b = prefix.clone().into_bytes();
+        if let Some(last) = b.last_mut() {
+            *last += 1; // dernier caractère = chiffre ASCII → borne haute valide
+        }
+        String::from_utf8(b).unwrap_or_else(|_| format!("{prefix}~"))
+    };
+
+    // Un SEUL aller-retour SQL (au lieu de 6) via des sous-requêtes scalaires,
+    // chacune restant indexée (EXPLAIN QUERY PLAN vérifié) :
+    //  - signalements de membres de CONFIANCE (anti-empoisonnement),
+    //  - catégories signalées,
+    //  - campagne : numéros distincts de la plage, membres de confiance, 24 h
+    //    (le filtre `trusted` était absent ici = contournement anti-poison),
+    //  - retours « spam » / « pas spam » des membres.
+    let (count, cats, burst, fb_spam, fb_ok): (i64, Option<String>, i64, i64, i64) =
+        sqlx::query_as(
+            "SELECT \
+               (SELECT COUNT(*) FROM reports r JOIN users u ON u.id = r.user_id \
+                  WHERE r.number = ? AND u.trusted = 1), \
+               (SELECT GROUP_CONCAT(DISTINCT category) FROM reports WHERE number = ?), \
+               (SELECT COUNT(DISTINCT r.number) FROM reports r JOIN users u ON u.id = r.user_id \
+                  WHERE r.number >= ? AND r.number < ? AND u.trusted = 1 \
+                  AND r.created_at > datetime('now','-1 day')), \
+               (SELECT COUNT(*) FROM feedback WHERE number = ? AND was_spam = 1), \
+               (SELECT COUNT(*) FROM feedback WHERE number = ? AND was_spam = 0)",
+        )
+        .bind(&number)
+        .bind(&number)
+        .bind(&prefix)
+        .bind(&prefix_upper)
+        .bind(&number)
+        .bind(&number)
+        .fetch_one(&st.pool)
+        .await
+        .unwrap_or((0, None, 0, 0, 0));
+
+    // Liste importée : numéro exact, sinon l'un des préfixes du numéro. Au lieu
+    // d'un `LIKE prefix||'%'` (joker côté colonne → scan complet), on teste les
+    // préfixes du numéro en `IN (...)` : point-lookups sur l'index de `prefix`.
     let imported: Option<(String, Option<String>)> =
         match sqlx::query_as("SELECT source, label FROM imported_numbers WHERE number = ?")
             .bind(&number)
@@ -183,48 +215,30 @@ pub async fn lookup(
             .flatten()
         {
             Some(x) => Some(x),
-            None => sqlx::query_as(
-                "SELECT source, label FROM imported_prefixes WHERE ? LIKE prefix || '%'",
-            )
-            .bind(&number)
-            .fetch_optional(&st.pool)
-            .await
-            .ok()
-            .flatten(),
+            None => {
+                let cands: Vec<&str> = (6..=number.len()).map(|k| &number[..k]).collect();
+                let mut qb = sqlx::QueryBuilder::new(
+                    "SELECT source, label FROM imported_prefixes WHERE prefix IN (",
+                );
+                let mut sep = qb.separated(", ");
+                for c in &cands {
+                    sep.push_bind(*c);
+                }
+                qb.push(") LIMIT 1");
+                qb.build_query_as::<(String, Option<String>)>()
+                    .fetch_optional(&st.pool)
+                    .await
+                    .ok()
+                    .flatten()
+            }
         };
+
     let arcep = is_arcep_demarchage(&number);
     let op = st.operators.read().unwrap().operator_for(&number);
-    let rep = reputation_map(&st).await;
-    let op_rep = op
-        .as_ref()
-        .and_then(|o| rep.get(&o.mnemo))
-        .copied()
-        .unwrap_or(0);
-
-    // Détection de campagne : nb de numéros distincts de la même plage
-    // (préfixe +33 + 3 chiffres) signalés dans les dernières 24 h.
-    let prefix: String = number.chars().take(6).collect();
-    let burst: i64 = sqlx::query_scalar(
-        "SELECT COUNT(DISTINCT number) FROM reports WHERE number LIKE ? || '%' \
-         AND created_at > datetime('now','-1 day')",
-    )
-    .bind(&prefix)
-    .fetch_one(&st.pool)
-    .await
-    .unwrap_or(0);
-    // Retour des membres sur ce numéro.
-    let fb_spam: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM feedback WHERE number = ? AND was_spam = 1")
-            .bind(&number)
-            .fetch_one(&st.pool)
-            .await
-            .unwrap_or(0);
-    let fb_ok: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM feedback WHERE number = ? AND was_spam = 0")
-            .bind(&number)
-            .fetch_one(&st.pool)
-            .await
-            .unwrap_or(0);
+    let op_rep = match &op {
+        Some(o) => op_reputation(&st, &o.mnemo).await,
+        None => 0,
+    };
 
     let (score, campaign) = suspicion_score(
         count,
@@ -752,8 +766,10 @@ pub async fn redeem_invite(
 pub async fn alerts(State(st): State<AppState>, headers: HeaderMap) -> ApiResult {
     require_user(&st, &headers).await?;
     let campaigns: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT substr(number,1,6) AS pfx, COUNT(DISTINCT number) AS c FROM reports \
-         WHERE created_at > datetime('now','-1 day') GROUP BY pfx HAVING c >= 3 ORDER BY c DESC LIMIT 20",
+        "SELECT substr(r.number,1,6) AS pfx, COUNT(DISTINCT r.number) AS c \
+         FROM reports r JOIN users u ON u.id = r.user_id \
+         WHERE u.trusted = 1 AND r.created_at > datetime('now','-1 day') \
+         GROUP BY pfx HAVING c >= 3 ORDER BY c DESC LIMIT 20",
     )
     .fetch_all(&st.pool)
     .await
@@ -1015,9 +1031,12 @@ pub async fn federation_feed(State(st): State<AppState>, headers: HeaderMap) -> 
     ) {
         return Err(e(StatusCode::TOO_MANY_REQUESTS, "Trop de requêtes"));
     }
+    // Anti-empoisonnement à l'échelle de la fédération : seuls les
+    // signalements de membres de CONFIANCE alimentent le flux partagé.
     let rows: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT number, COUNT(DISTINCT user_id) AS c FROM reports \
-         GROUP BY number HAVING c >= 2 ORDER BY c DESC LIMIT 5000",
+        "SELECT r.number, COUNT(DISTINCT r.user_id) AS c \
+         FROM reports r JOIN users u ON u.id = r.user_id \
+         WHERE u.trusted = 1 GROUP BY r.number HAVING c >= 2 ORDER BY c DESC LIMIT 5000",
     )
     .fetch_all(&st.pool)
     .await
@@ -1063,8 +1082,10 @@ async fn collect_stats(st: &AppState) -> Value {
         idx.reputation(&all_numbers)
     };
     let campaigns: Vec<(String, i64)> = sqlx::query_as(
-        "SELECT substr(number,1,6) AS pfx, COUNT(DISTINCT number) AS c FROM reports \
-         WHERE created_at > datetime('now','-1 day') GROUP BY pfx HAVING c >= 3 ORDER BY c DESC",
+        "SELECT substr(r.number,1,6) AS pfx, COUNT(DISTINCT r.number) AS c \
+         FROM reports r JOIN users u ON u.id = r.user_id \
+         WHERE u.trusted = 1 AND r.created_at > datetime('now','-1 day') \
+         GROUP BY pfx HAVING c >= 3 ORDER BY c DESC",
     )
     .fetch_all(&st.pool)
     .await

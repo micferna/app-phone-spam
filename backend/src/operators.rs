@@ -85,7 +85,10 @@ impl OperatorIndex {
     /// e164 (+33XXXXXXXXX) -> opérateur (métropole).
     pub fn operator_for(&self, e164: &str) -> Option<Operator> {
         let rest = e164.strip_prefix("+33")?;
-        let nat: i64 = format!("0{rest}").parse().ok()?;
+        // Le zéro national de tête est numériquement inutile : "0612…".parse::<i64>()
+        // == "612…".parse::<i64>(), et les bornes du CSV sont parsées de même. On
+        // évite ainsi une allocation String par appel (chemin chaud + boucle réputation).
+        let nat: i64 = rest.parse().ok()?;
         let mnemo = self.mnemo_for_national(nat)?;
         Some(Operator {
             mnemo: mnemo.to_string(),

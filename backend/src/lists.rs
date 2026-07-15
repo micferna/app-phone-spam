@@ -120,6 +120,10 @@ pub struct ListResult {
 pub async fn update_lists(pool: &SqlitePool) -> Vec<ListResult> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
+        // L'allowlist d'hôtes n'est vérifiée que sur l'URL initiale : on interdit
+        // les redirections pour qu'une source ne puisse pas rediriger hors
+        // allowlist (défense en profondeur anti-SSRF). GitHub raw sert en direct.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .unwrap();
     let mut results = Vec::new();
