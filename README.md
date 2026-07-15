@@ -206,6 +206,10 @@ démarchage (décision 2022-1583 : 0162, 0163, 0270, 0271, 0377, 0378, 0424,
   numéro (« pas spam »), jamais un signal fiable.
 - **Feedback utilisateur** : « était-ce du spam ? » tempère le score et réduit
   les faux positifs.
+- **Auto-signalement** : les numéros bloqués/silenciés par l'app et encore
+  inconnus du groupe sont remontés automatiquement (catégorie `demarchage` pour
+  l'ARCEP, sinon `auto`) → nourrit la détection de campagne et la réputation.
+  Désactivable dans les réglages.
 - **Fédération** : un serveur expose `/api/federation/feed` (numéros confirmés
   par ≥ 2 membres, anonymisé) ; via `FEDERATION_PEERS` (env, URLs séparées par
   des virgules) un serveur importe le flux de ses pairs → effet réseau.

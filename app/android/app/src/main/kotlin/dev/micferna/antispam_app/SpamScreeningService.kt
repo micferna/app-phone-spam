@@ -140,6 +140,15 @@ class SpamScreeningService : CallScreeningService() {
                 !suspicious -> notifyUnknown(json?.optString("number", number) ?: number)
             }
             logHistory(number, verdict, action, json?.let { operatorLabel(it) } ?: "")
+            // Auto-signalement : le numéro qu'on vient de bloquer/silencier est
+            // remonté au groupe (nourrit campagne + réputation). Désactivable
+            // (flutter.auto_report). On ne remonte QUE les numéros encore
+            // inconnus du groupe (reportCount 0 ou serveur muet) pour éviter le
+            // bruit et les doublons.
+            val known = json?.optInt("reportCount", 0) ?: 0
+            if (suspicious && known == 0 && prefs.getBoolean("flutter.auto_report", true)) {
+                autoReport(serverUrl, apiKey, number, if (arcepLocal) "demarchage" else "auto")
+            }
         }
     }
 
@@ -229,6 +238,30 @@ class SpamScreeningService : CallScreeningService() {
 
     private fun logHistory(number: String, verdict: String, action: String, operator: String) {
         History.log(this, "call", number, verdict, action, operator)
+    }
+
+    /// Signale au backend un numéro que l'app vient de bloquer/silencier
+    /// (fire-and-forget ; tout échec réseau est ignoré). Le serveur normalise
+    /// et déduplique (upsert par user+numéro).
+    private fun autoReport(serverUrl: String, apiKey: String, number: String, category: String) {
+        try {
+            val conn = URL("$serverUrl/api/reports").openConnection() as HttpURLConnection
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("X-Api-Key", apiKey)
+            conn.setRequestProperty("Content-Type", "application/json")
+            conn.doOutput = true
+            conn.connectTimeout = 3000
+            conn.readTimeout = 3000
+            val body = JSONObject()
+                .put("number", number)
+                .put("category", category)
+                .put("comment", "auto : bloqué par l'app")
+                .toString()
+            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            conn.inputStream.use { it.readBytes() }
+            conn.disconnect()
+        } catch (_: Exception) {
+        }
     }
 
     private fun lookup(serverUrl: String, apiKey: String, number: String): JSONObject? {

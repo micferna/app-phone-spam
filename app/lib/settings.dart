@@ -13,6 +13,7 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
+  bool _autoReport = true;
   bool _night = false;
   int _start = 21;
   int _end = 8;
@@ -25,6 +26,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
     super.initState();
     SharedPreferences.getInstance().then((p) {
       setState(() {
+        _autoReport = p.getBool(kPrefAutoReport) ?? true;
         _night = p.getBool(kPrefNightSilence) ?? false;
         _start = p.getInt(kPrefNightStart) ?? 21;
         _end = p.getInt(kPrefNightEnd) ?? 8;
@@ -38,6 +40,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<SharedPreferences> get _prefs => SharedPreferences.getInstance();
+
+  Future<void> _saveAutoReport() async {
+    final p = await _prefs;
+    await p.setBool(kPrefAutoReport, _autoReport);
+  }
 
   Future<void> _saveNight() async {
     final p = await _prefs;
@@ -73,6 +80,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          SwitchListTile(
+            value: _autoReport,
+            onChanged: (v) {
+              setState(() => _autoReport = v);
+              _saveAutoReport();
+            },
+            title: const Text('Signaler les blocages au groupe'),
+            subtitle: const Text(
+                'Les numéros bloqués (encore inconnus du groupe) sont remontés '
+                'automatiquement — ça renforce la détection pour tout le monde.'),
+          ),
+          const Divider(height: 32),
           SwitchListTile(
             value: _night,
             onChanged: (v) {
