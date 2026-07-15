@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.READ_CONTACTS"/>
     <uses-permission android:name="android.permission.RECEIVE_SMS"/>
     <uses-permission android:name="android.permission.CAMERA"/>
+    <!-- Mise à jour intégrée : installer l'APK téléchargé depuis GitHub -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
     <application
         android:label="Anti-Spam"
         android:name="${applicationName}"
@@ -75,6 +77,17 @@
             android:showOnLockScreen="true"
             android:taskAffinity=""
             android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen"/>
+
+        <!-- Partage de l'APK téléchargé avec l'installateur système (updater) -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"/>
+        </provider>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

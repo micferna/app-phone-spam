@@ -34,6 +34,30 @@ Future<String?> latestReleaseTag() async {
   }
 }
 
+/// URL de téléchargement direct de l'APK de la dernière release (premier asset
+/// dont le nom finit par `.apk`), ou null si absent. Sert à l'updater intégré :
+/// l'app télécharge et lance l'installateur elle-même, sans passer par le
+/// navigateur ni un téléchargement manuel.
+Future<String?> latestReleaseApkUrl() async {
+  try {
+    final res = await http
+        .get(Uri.parse('https://api.github.com/repos/$kRepoSlug/releases/latest'),
+            headers: {'Accept': 'application/vnd.github+json'})
+        .timeout(const Duration(seconds: 8));
+    if (res.statusCode != 200) return null;
+    final assets = (jsonDecode(res.body)['assets'] as List?) ?? [];
+    for (final a in assets) {
+      final name = ((a as Map)['name'] as String?)?.toLowerCase() ?? '';
+      if (name.endsWith('.apk')) {
+        return a['browser_download_url'] as String?;
+      }
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
 class LookupResult {
   final String number;
   final int reportCount;

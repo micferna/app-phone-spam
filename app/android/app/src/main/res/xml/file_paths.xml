@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Expose le cache de l'app au FileProvider pour partager l'APK de mise à
+     jour (update.apk) avec l'installateur système. -->
+<paths>
+    <cache-path name="update_cache" path="." />
+</paths>

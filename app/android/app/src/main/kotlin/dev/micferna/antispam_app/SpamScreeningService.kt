@@ -55,18 +55,31 @@ class SpamScreeningService : CallScreeningService() {
             return
         }
 
+        // Détection locale des plages ARCEP de démarchage : fiable même serveur
+        // injoignable / réseau lent (ces numéros 0270…, 0568…, 0948… SONT du
+        // démarchage par définition, pas besoin du serveur pour le savoir).
+        val arcepLocal = isArcepDemarchage(number)
+
         if (mode == "alert") {
             // Ne jamais retarder la sonnerie : on laisse passer tout de
             // suite, la notification arrive pendant que ça sonne.
             respondToCall(callDetails, CallResponse.Builder().build())
             thread {
                 val json = lookup(serverUrl, apiKey, number)
-                if (json != null && json.optBoolean("suspicious")) {
-                    notifySuspicious(json, mode)
-                    logHistory(number, "suspect", "alerte", operatorLabel(json))
-                } else {
-                    notifyUnknown(json?.optString("number", number) ?: number)
-                    logHistory(number, "inconnu", "laissé sonner", "")
+                when {
+                    json != null && json.optBoolean("suspicious") -> {
+                        notifySuspicious(json, mode)
+                        logHistory(number, "suspect", "alerte", operatorLabel(json))
+                    }
+                    // Serveur muet mais plage ARCEP connue localement.
+                    json == null && arcepLocal -> {
+                        notifySuspicious(arcepJson(number), mode)
+                        logHistory(number, "suspect", "alerte (ARCEP local)", "")
+                    }
+                    else -> {
+                        notifyUnknown(json?.optString("number", number) ?: number)
+                        logHistory(number, "inconnu", "laissé sonner", "")
+                    }
                 }
             }
             return
@@ -75,8 +88,11 @@ class SpamScreeningService : CallScreeningService() {
         // Modes silence / block : la réponse au système attend le verdict.
         thread {
             val json = lookup(serverUrl, apiKey, number)
-            // Serveur injoignable → repli sur le cache hors-ligne.
+            // Suspect si : plage ARCEP (local, fiable hors-ligne) OU verdict
+            // serveur OU cache hors-ligne. Garantit le blocage des 0270/0568/…
+            // même si le backend est injoignable au moment de l'appel.
             val suspicious = json?.optBoolean("suspicious") == true ||
+                arcepLocal ||
                 (json == null && cachedSuspicious(prefs, number))
             val response = when {
                 !suspicious -> CallResponse.Builder().build()
@@ -95,8 +111,11 @@ class SpamScreeningService : CallScreeningService() {
                 else -> "silencié"
             }
             val verdict = if (suspicious) "suspect" else "inconnu"
-            if (json != null && json.optBoolean("suspicious")) notifySuspicious(json, mode)
-            else if (!suspicious) notifyUnknown(json?.optString("number", number) ?: number)
+            when {
+                json != null && json.optBoolean("suspicious") -> notifySuspicious(json, mode)
+                suspicious && arcepLocal -> notifySuspicious(arcepJson(number), mode)
+                !suspicious -> notifyUnknown(json?.optString("number", number) ?: number)
+            }
             logHistory(number, verdict, action, json?.let { operatorLabel(it) } ?: "")
         }
     }
@@ -149,6 +168,36 @@ class SpamScreeningService : CallScreeningService() {
             false
         }
     }
+
+    // --- Plages ARCEP réservées au démarchage (décision 2022-1583).
+    // Réplique de backend/src/normalize.rs pour un blocage 100 % hors-ligne. ---
+    private val arcepPrefixes = listOf(
+        "+33162", "+33163", "+33270", "+33271", "+33377", "+33378",
+        "+33424", "+33425", "+33568", "+33569", "+33948", "+33949",
+        "+339475", "+339476", "+339477", "+339478", "+339479",
+    )
+
+    /// Normalise vers E.164 FR (06… / 0033… / +33…) sans validation stricte :
+    /// on cherche seulement à comparer un préfixe.
+    private fun toE164(raw: String): String {
+        var n = raw.filter { it !in " .-()\t" }
+        if (n.startsWith("00")) n = "+" + n.substring(2)
+        if (n.length == 10 && n.startsWith("0") && n[1] != '0') n = "+33" + n.substring(1)
+        return n
+    }
+
+    private fun isArcepDemarchage(number: String): Boolean {
+        val e = toE164(number)
+        return arcepPrefixes.any { e.startsWith(it) }
+    }
+
+    /// JSON minimal pour notifier un blocage ARCEP décidé localement (sans
+    /// réponse serveur), consommé par notifySuspicious().
+    private fun arcepJson(number: String): JSONObject = JSONObject()
+        .put("number", number)
+        .put("arcepDemarchage", true)
+        .put("suspicious", true)
+        .put("reportCount", 0)
 
     private fun operatorLabel(json: JSONObject): String {
         val name = if (json.isNull("operatorName")) "" else json.optString("operatorName", "")

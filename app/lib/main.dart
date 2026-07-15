@@ -378,6 +378,74 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
+  /// Updater intégré : télécharge l'APK de la dernière release et lance
+  /// l'installateur système, sans navigateur ni téléchargement manuel.
+  /// Android impose toujours un unique écran « Installer ? » (impossible à
+  /// supprimer hors app système), et une autorisation « installer des applis
+  /// inconnues » à accorder une seule fois.
+  Future<void> _startUpdate() async {
+    final messenger = ScaffoldMessenger.of(context);
+
+    // 1) Autorisation d'installer des APK (une seule fois).
+    final canInstall =
+        await _native.invokeMethod<bool>('canInstallPackages') ?? true;
+    if (!canInstall) {
+      if (!mounted) return;
+      final grant = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Autoriser la mise à jour'),
+          content: const Text(
+              'Android doit d\'abord autoriser cette app à installer des '
+              'mises à jour. Active « Autoriser depuis cette source », reviens, '
+              'puis réappuie sur la mise à jour.'),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Annuler')),
+            FilledButton(
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Ouvrir les réglages')),
+          ],
+        ),
+      );
+      if (grant == true) {
+        await _native.invokeMethod('requestInstallPermission');
+      }
+      return;
+    }
+
+    // 2) URL de l'APK de la dernière release (repli navigateur si absente).
+    final url = await latestReleaseApkUrl();
+    if (url == null) {
+      await launchReleases();
+      return;
+    }
+
+    // 3) Téléchargement (spinner) puis passage de relais à l'installateur.
+    if (!mounted) return;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const AlertDialog(
+        content: Row(children: [
+          CircularProgressIndicator(),
+          SizedBox(width: 20),
+          Expanded(child: Text('Téléchargement de la mise à jour…')),
+        ]),
+      ),
+    );
+    try {
+      await _native.invokeMethod('installUpdate', {'url': url});
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('Échec de la mise à jour : $e')),
+      );
+    } finally {
+      if (mounted) Navigator.of(context, rootNavigator: true).pop();
+    }
+  }
+
   // Compare deux versions "x.y.z" ; true si a > b.
   bool _isNewer(String a, String b) {
     final pa = a.split('.').map((x) => int.tryParse(x) ?? 0).toList();
@@ -483,8 +551,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               child: ListTile(
                 leading: const Icon(Icons.system_update),
                 title: Text('Nouvelle version $_updateTag disponible'),
-                subtitle: const Text('Appuie pour télécharger la mise à jour.'),
-                onTap: () => launchReleases(),
+                subtitle: const Text('Appuie pour installer directement.'),
+                trailing: const Icon(Icons.download),
+                onTap: _startUpdate,
               ),
             ),
           if (_campaigns.isNotEmpty)
