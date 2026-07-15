@@ -11,10 +11,12 @@ services:
       dockerfile: Dockerfile
     ports:
       - "3000:3000"
-    # Pas de secret d'env ici : runship ne peut injecter un secret qu'au
-    # déploiement, et on ne peut pas en attacher avant que la stack existe
-    # (+ les updates sont cassées). L'init se fait donc via /api/bootstrap
-    # « premier arrivé », lancé immédiatement après l'exposition.
+    # Clé admin injectée depuis le secret runship `ADMIN_KEY` (posé via
+    # `runship stack secrets set`) → clé admin gérable/rotable. Si le secret
+    # est absent, la variable est vide et l'app retombe sur le hash admin
+    # défini au bootstrap (« premier arrivé »).
+    environment:
+      - ADMIN_KEY=${ADMIN_KEY}
     volumes:
       - data:/data
     restart: unless-stopped
