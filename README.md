@@ -197,6 +197,13 @@ démarchage (décision 2022-1583 : 0162, 0163, 0270, 0271, 0377, 0378, 0424,
 - **Score de confiance** (`suspicionScore` 0-100) combinant signalements,
   ARCEP, listes, réputation opérateur et **détection de campagne** (pic de
   signalements sur une plage dans les dernières 24 h → `campaignActive`).
+- **Décision de blocage** (`suspicious`) : signaux fiables (signalement d'un
+  membre de confiance, présence en liste, plage ARCEP) **+** deux heuristiques
+  qui rattrapent les fixes 02/05 « neufs » utilisés pour contourner les plages
+  ARCEP — une **campagne active** sur la plage, et un **score ≥ seuil**
+  (`BLOCK_SCORE_THRESHOLD`, défaut 70 ; `0` désactive la clause de score). Ces
+  heuristiques sont neutralisées si les membres ont majoritairement blanchi le
+  numéro (« pas spam »), jamais un signal fiable.
 - **Feedback utilisateur** : « était-ce du spam ? » tempère le score et réduit
   les faux positifs.
 - **Fédération** : un serveur expose `/api/federation/feed` (numéros confirmés

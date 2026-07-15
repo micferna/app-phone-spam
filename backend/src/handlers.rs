@@ -235,8 +235,16 @@ pub async fn lookup(
         fb_spam,
         fb_ok,
     );
-    // Binaire fiable (blocage) inchangé ; le score ajoute la nuance.
-    let suspicious = count > 0 || imported.is_some() || arcep;
+    // Signaux fiables (blocage direct) : signalement de confiance, liste,
+    // plage ARCEP. On y ajoute deux heuristiques pour rattraper les fixes
+    // 02/05 « neufs » que les démarcheurs utilisent justement pour éviter les
+    // plages ARCEP : une campagne active sur la même plage, et un score au-delà
+    // du seuil configuré. Ces heuristiques sont neutralisées si les membres ont
+    // explicitement blanchi ce numéro (« pas spam »), pour ne pas bloquer un
+    // fixe local légitime.
+    let hard = count > 0 || imported.is_some() || arcep;
+    let member_cleared = fb_ok > fb_spam && fb_ok > 0;
+    let suspicious = is_suspicious(hard, campaign, score, st.block_score_threshold, member_cleared);
 
     let categories: Vec<&str> = cats
         .as_deref()
@@ -293,6 +301,33 @@ fn suspicion_score(
         s -= 40;
     }
     (s.clamp(0, 100), campaign)
+}
+
+/// Décision binaire de blocage appliquée par l'app (selon le mode Alerter /
+/// Silence / Bloquer choisi côté téléphone).
+///
+/// - `hard` : signaux fiables (signalement d'un membre de confiance, présence
+///   en liste importée, plage ARCEP) → suspect quoi qu'il arrive.
+/// - `campaign` : une campagne est active sur la plage du numéro.
+/// - `score` / `threshold` : score global vs seuil configuré (`threshold == 0`
+///   désactive la clause de score).
+/// - `member_cleared` : les membres ont majoritairement marqué ce numéro comme
+///   légitime → on neutralise les deux heuristiques (mais jamais un signal
+///   fiable, qui reste prioritaire).
+fn is_suspicious(
+    hard: bool,
+    campaign: bool,
+    score: i64,
+    threshold: i64,
+    member_cleared: bool,
+) -> bool {
+    if hard {
+        return true;
+    }
+    if member_cleared {
+        return false;
+    }
+    campaign || (threshold > 0 && score >= threshold)
 }
 
 pub async fn create_report(
@@ -1199,4 +1234,54 @@ fn confirmation(title: &str, body_html: &str, code: StatusCode) -> Response {
         Html(crate::pages::confirmation_page(title, body_html)),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_suspicious, suspicion_score};
+
+    #[test]
+    fn signal_fiable_bloque_toujours() {
+        // Un signal fiable prime sur tout, y compris un numéro blanchi.
+        assert!(is_suspicious(true, false, 0, 70, false));
+        assert!(is_suspicious(true, true, 0, 70, true));
+    }
+
+    #[test]
+    fn fixe_neuf_passe_le_jour1() {
+        // 02/05 jamais vu, aucun signal, pas de campagne → laissé passer.
+        assert!(!is_suspicious(false, false, 30, 70, false));
+    }
+
+    #[test]
+    fn campagne_active_bloque_meme_sans_signalement() {
+        // Vague de démarchage sur la plage → on bloque les numéros non signalés.
+        assert!(is_suspicious(false, true, 25, 70, false));
+        // Même avec la clause de score coupée (threshold 0).
+        assert!(is_suspicious(false, true, 0, 0, false));
+    }
+
+    #[test]
+    fn seuil_de_score() {
+        assert!(is_suspicious(false, false, 75, 70, false)); // >= seuil
+        assert!(is_suspicious(false, false, 70, 70, false)); // pile au seuil
+        assert!(!is_suspicious(false, false, 69, 70, false)); // sous le seuil
+        assert!(!is_suspicious(false, false, 100, 0, false)); // clause désactivée
+    }
+
+    #[test]
+    fn numero_blanchi_neutralise_les_heuristiques() {
+        // Campagne + score max mais membres = « pas spam » → pas bloqué.
+        assert!(!is_suspicious(false, true, 100, 70, true));
+    }
+
+    #[test]
+    fn score_campagne_ajoute_25() {
+        // Un pic (burst >= 3) marque la campagne et pousse le score.
+        let (sans, camp_off) = suspicion_score(0, false, false, 0, 2, 0, 0);
+        let (avec, camp_on) = suspicion_score(0, false, false, 0, 3, 0, 0);
+        assert!(!camp_off);
+        assert!(camp_on);
+        assert_eq!(avec - sans, 25);
+    }
 }

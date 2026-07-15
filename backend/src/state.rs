@@ -30,6 +30,11 @@ pub struct AppState {
     pub federation_peers: Vec<String>,
     /// Dossier des sauvegardes quotidiennes.
     pub backup_dir: String,
+    /// Seuil de score (0-100) au-delà duquel un numéro est jugé suspect même
+    /// sans signalement direct ni présence en liste. 0 = clause de score
+    /// désactivée (seule la campagne active joue). Réglable via
+    /// `BLOCK_SCORE_THRESHOLD` (défaut 70).
+    pub block_score_threshold: i64,
     /// Sessions admin actives : token de session -> expiration (epoch secondes).
     /// En mémoire : une redéploiement invalide les sessions (l'admin se
     /// reconnecte). Évite d'embarquer la clé admin dans le HTML du dashboard.

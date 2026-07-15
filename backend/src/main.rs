@@ -84,6 +84,10 @@ async fn main() {
             &std::env::var("FEDERATION_PEERS").unwrap_or_default(),
         ),
         backup_dir,
+        block_score_threshold: std::env::var("BLOCK_SCORE_THRESHOLD")
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(70),
         sessions: Arc::new(Mutex::new(HashMap::new())),
     };
 
