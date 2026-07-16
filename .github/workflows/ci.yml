@@ -51,3 +51,9 @@ jobs:
         run: flutter analyze
       - name: Tests
         run: flutter test
+      # Build Android réel : `analyze`/`test` ne compilent pas le Gradle Android,
+      # donc ils laissaient passer des bumps de plugins qui cassent le build
+      # (ex. package_info_plus 10 / mobile_scanner 7 incompatibles AGP 9). Ce
+      # build APK ferme ce trou : une PR qui ne build pas ne sera plus verte.
+      - name: Build APK (débogage)
+        run: flutter build apk --debug

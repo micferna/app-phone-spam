@@ -19,6 +19,16 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    ignore:
+      # Bloquées tant que le toolchain Android reste en AGP 9 : leurs versions
+      # majeures (package_info_plus 10+, mobile_scanner 7+) sont à moitié migrées
+      # vers le « built-in Kotlin » d'AGP 9 et ne buildent dans aucun mode
+      # (KGP absent → classe non compilée ; KGP présent → AGP le refuse).
+      # À rouvrir quand les plugins auront fini leur migration built-in Kotlin.
+      - dependency-name: "package_info_plus"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "mobile_scanner"
+        update-types: ["version-update:semver-major"]
 
   # Images de base Docker (Dockerfile racine)
   - package-ecosystem: "docker"
