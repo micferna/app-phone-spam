@@ -8,6 +8,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.provider.ContactsContract
 import android.telecom.Call
 import android.telecom.CallScreeningService
@@ -17,6 +19,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 /**
@@ -27,9 +30,13 @@ import kotlin.concurrent.thread
  *                manqué + notification ;
  *  - "block"   : appel suspect → rejeté immédiatement + notification.
  *
- * En modes silence/block, la décision attend la réponse du serveur
- * (~5 s max imposées par Android) ; serveur injoignable → l'appel
- * sonne normalement, on ne rate jamais un appel légitime.
+ * Android ne laisse que ~5 s à onScreenCall() puis présente l'appel sans
+ * nous, en ignorant silencieusement toute réponse tardive : tout ce qui
+ * précède respondToCall() doit tenir dans cette fenêtre. Un verdict local
+ * (plage ARCEP, règle de catégorie, numéro masqué) est donc rendu AVANT
+ * tout accès réseau ; le serveur n'est attendu que lorsqu'il est seul à
+ * pouvoir trancher, et sous filet de sécurité. Serveur injoignable ou trop
+ * lent → l'appel sonne, on ne rate jamais un appel légitime.
  */
 class SpamScreeningService : CallScreeningService() {
 
@@ -43,6 +50,7 @@ class SpamScreeningService : CallScreeningService() {
         // « Ne pas déranger la nuit » : les appels suspects sont silenciés la
         // nuit même en mode Alerter.
         val mode = if (chosenMode == "alert" && nightSilenceActive(prefs)) "silence" else chosenMode
+        val responder = Responder(callDetails)
 
         // Numéro masqué / anonyme : décision purement locale (aucun numéro à
         // interroger). Réglage `hidden_mode` : ring (défaut) | silence | block.
@@ -52,12 +60,7 @@ class SpamScreeningService : CallScreeningService() {
             presentation == TelecomManager.PRESENTATION_UNKNOWN
         if (hidden) {
             val hiddenMode = prefs.getString("flutter.hidden_mode", "ring") ?: "ring"
-            val response = when (hiddenMode) {
-                "block" -> CallResponse.Builder().setDisallowCall(true).setRejectCall(true).build()
-                "silence" -> CallResponse.Builder().setSilenceCall(true).build()
-                else -> CallResponse.Builder().build()
-            }
-            respondToCall(callDetails, response)
+            if (hiddenMode == "ring") responder.allow() else responder.filter(hiddenMode)
             if (hiddenMode != "ring") {
                 val action = if (hiddenMode == "block") "bloqué" else "silencié"
                 logHistory("Masqué", "masqué", action, "")
@@ -67,13 +70,13 @@ class SpamScreeningService : CallScreeningService() {
         }
 
         if (number == null || serverUrl == null || apiKey == null) {
-            respondToCall(callDetails, CallResponse.Builder().build())
+            responder.allow()
             return
         }
 
         // Exemption des contacts + whitelist manuelle : jamais filtrés.
         if ((skipContacts && isInContacts(number)) || isWhitelisted(prefs, number)) {
-            respondToCall(callDetails, CallResponse.Builder().build())
+            responder.allow()
             logHistory(number, "contact", "laissé sonner", "")
             return
         }
@@ -90,7 +93,7 @@ class SpamScreeningService : CallScreeningService() {
         if (mode == "alert") {
             // Ne jamais retarder la sonnerie : on laisse passer tout de
             // suite, la notification arrive pendant que ça sonne.
-            respondToCall(callDetails, CallResponse.Builder().build())
+            responder.allow()
             thread {
                 val json = lookup(serverUrl, apiKey, number)
                 when {
@@ -117,51 +120,119 @@ class SpamScreeningService : CallScreeningService() {
             return
         }
 
-        // Modes silence / block : la réponse au système attend le verdict.
+        // Modes silence / block.
+        //
+        // Verdict local (plage ARCEP ou règle de catégorie) : certain et
+        // immédiat → on répond AVANT le réseau. Le serveur ne pourrait que
+        // confirmer (il n'a pas de droit de veto sur ces critères), il n'a donc
+        // pas à retarder le filtrage : le lookup passe derrière, juste pour
+        // enrichir la notification et l'auto-signalement.
+        if (arcepLocal || categoryLabel != null) {
+            responder.filter(mode)
+            val action = if (mode == "block") "bloqué" else "silencié"
+            thread {
+                val json = lookup(serverUrl, apiKey, number)
+                when {
+                    json != null && json.optBoolean("suspicious") -> notifySuspicious(json, mode)
+                    arcepLocal -> notifySuspicious(arcepJson(number), mode)
+                    categoryLabel != null ->
+                        notifySuspicious(localJson(number, categoryLabel), mode)
+                }
+                logHistory(number, "suspect", action, json?.let { operatorLabel(it) } ?: "")
+                autoReportIfNew(prefs, serverUrl, apiKey, number, json, arcepLocal)
+            }
+            return
+        }
+
+        // Aucun signal local : seul le serveur peut trancher, il faut donc
+        // l'attendre. Filet de sécurité obligatoire — les timeouts de
+        // HttpURLConnection ne couvrent PAS la résolution DNS, qui peut à elle
+        // seule dépasser la fenêtre et faire sonner l'appel dans notre dos.
+        val watchdog = Handler(Looper.getMainLooper())
+        watchdog.postDelayed({
+            if (responder.allow()) {
+                logHistory(number, "inconnu", "laissé sonner (serveur trop lent)", "")
+            }
+        }, LOOKUP_BUDGET_MS)
+
         thread {
             val json = lookup(serverUrl, apiKey, number)
-            // Suspect si : plage ARCEP (local, fiable hors-ligne) OU verdict
-            // serveur OU cache hors-ligne. Garantit le blocage des 0270/0568/…
-            // même si le backend est injoignable au moment de l'appel.
+            // Cache hors-ligne : filet quand le serveur est muet.
             val suspicious = json?.optBoolean("suspicious") == true ||
-                arcepLocal ||
-                categoryLabel != null ||
                 (json == null && cachedSuspicious(prefs, number))
-            val response = when {
-                !suspicious -> CallResponse.Builder().build()
-                mode == "block" -> CallResponse.Builder()
-                    .setDisallowCall(true)
-                    .setRejectCall(true)
-                    .build()
-                else -> CallResponse.Builder()
-                    .setSilenceCall(true)
-                    .build()
+            watchdog.removeCallbacksAndMessages(null)
+
+            if (!suspicious) {
+                if (responder.allow()) {
+                    notifyUnknown(json?.optString("number", number) ?: number)
+                    logHistory(number, "inconnu", "laissé sonner", "")
+                }
+                return@thread
             }
-            respondToCall(callDetails, response)
+
+            // filter() échoue si le verdict arrive hors délai : le système a
+            // déjà présenté l'appel. On alerte alors au lieu d'annoncer (et de
+            // journaliser) un blocage qui n'a pas eu lieu.
+            val filtered = responder.filter(mode)
+            if (json != null && json.optBoolean("suspicious")) {
+                notifySuspicious(json, if (filtered) mode else "alert")
+            }
             val action = when {
-                !suspicious -> "laissé sonner"
+                !filtered -> "alerte (verdict serveur tardif)"
                 mode == "block" -> "bloqué"
                 else -> "silencié"
             }
-            val verdict = if (suspicious) "suspect" else "inconnu"
-            when {
-                json != null && json.optBoolean("suspicious") -> notifySuspicious(json, mode)
-                suspicious && arcepLocal -> notifySuspicious(arcepJson(number), mode)
-                suspicious && categoryLabel != null ->
-                    notifySuspicious(localJson(number, categoryLabel), mode)
-                !suspicious -> notifyUnknown(json?.optString("number", number) ?: number)
+            logHistory(number, "suspect", action, json?.let { operatorLabel(it) } ?: "")
+            autoReportIfNew(prefs, serverUrl, apiKey, number, json, arcepLocal = false)
+        }
+    }
+
+    /// Une seule réponse par appel : le lookup et le filet de sécurité de
+    /// deadline se courent après. Renvoie false quand la réponse est déjà
+    /// partie, ce qui permet à l'appelant de ne pas journaliser un filtrage
+    /// qui n'a pas eu lieu.
+    private inner class Responder(private val details: Call.Details) {
+        private val done = AtomicBoolean(false)
+
+        fun allow(): Boolean = respond(CallResponse.Builder().build())
+
+        fun filter(mode: String): Boolean = respond(
+            if (mode == "block") {
+                CallResponse.Builder().setDisallowCall(true).setRejectCall(true).build()
+            } else {
+                CallResponse.Builder().setSilenceCall(true).build()
             }
-            logHistory(number, verdict, action, json?.let { operatorLabel(it) } ?: "")
-            // Auto-signalement : on ne remonte au groupe QUE des signaux objectifs
-            // (plage ARCEP ou verdict serveur), encore inconnus (reportCount 0).
-            // Un blocage « catégorie perso » (VoIP/international/surtaxé) ou issu
-            // du cache n'est PAS remonté, pour ne pas polluer le groupe avec des
-            // préférences individuelles. Désactivable (flutter.auto_report).
-            val known = json?.optInt("reportCount", 0) ?: 0
-            val objectiveSpam = arcepLocal || json?.optBoolean("suspicious") == true
-            if (objectiveSpam && known == 0 && prefs.getBoolean("flutter.auto_report", true)) {
-                autoReport(serverUrl, apiKey, number, if (arcepLocal) "demarchage" else "auto")
+        )
+
+        private fun respond(response: CallResponse): Boolean {
+            if (!done.compareAndSet(false, true)) return false
+            return try {
+                respondToCall(details, response)
+                true
+            } catch (_: Exception) {
+                // Appel déjà terminé côté système : rien à filtrer.
+                false
             }
+        }
+    }
+
+    /// Auto-signalement : on ne remonte au groupe QUE des signaux objectifs
+    /// (plage ARCEP ou verdict serveur), encore inconnus (reportCount 0). Un
+    /// blocage « catégorie perso » (VoIP/international/surtaxé) ou issu du cache
+    /// n'est PAS remonté, pour ne pas polluer le groupe avec des préférences
+    /// individuelles. Désactivable (flutter.auto_report).
+    private fun autoReportIfNew(
+        prefs: android.content.SharedPreferences,
+        serverUrl: String,
+        apiKey: String,
+        number: String,
+        json: JSONObject?,
+        arcepLocal: Boolean,
+    ) {
+        val known = json?.optInt("reportCount", 0) ?: 0
+        val objectiveSpam = arcepLocal || json?.optBoolean("suspicious") == true
+        if (objectiveSpam && known == 0 && prefs.getBoolean("flutter.auto_report", true)) {
+            autoReport(serverUrl, apiKey, number, if (arcepLocal) "demarchage" else "auto")
         }
     }
 
@@ -459,5 +530,10 @@ class SpamScreeningService : CallScreeningService() {
     companion object {
         const val CHANNEL_ALERT = "spam_alert"
         const val CHANNEL_INFO = "unknown_call"
+
+        /// Délai au bout duquel on laisse sonner sans attendre le serveur.
+        /// Android coupe à ~5 s après le bind ; la marge couvre le démarrage du
+        /// process, que l'on ne peut pas mesurer depuis onScreenCall().
+        private const val LOOKUP_BUDGET_MS = 3500L
     }
 }
