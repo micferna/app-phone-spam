@@ -1,7 +1,7 @@
 //! État partagé de l'application + limitation de débit en mémoire.
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -22,6 +22,63 @@ pub struct Bucket {
 pub struct ClientIp(pub String);
 
 const MAX_BUCKETS: usize = 50_000;
+
+/// Observation du trafic réel pour détecter une `TRUST_PROXY` mal réglée.
+///
+/// Le réglage doit correspondre à la topologie de déploiement, et les deux
+/// erreurs possibles sont silencieuses — d'où cette sonde plutôt qu'une
+/// consigne dans un README que personne ne relit au moment du déploiement.
+#[derive(Default)]
+pub struct ProxyProbe {
+    /// Une requête portant `cf-ray` a été vue : seul Cloudflare pose cet
+    /// en-tête, on est donc bien derrière lui.
+    pub seen_cf: AtomicBool,
+    /// Une requête est arrivée d'une IP publique SANS `cf-ray` : l'origine est
+    /// joignable en direct.
+    pub seen_direct: AtomicBool,
+    /// Dernier avertissement journalisé (epoch s) — sinon on inonderait les
+    /// logs à chaque requête.
+    pub last_warn: AtomicU64,
+}
+
+/// Confronte le réglage `TRUST_PROXY` au trafic réellement observé.
+/// `None` = configuration cohérente.
+pub fn proxy_misconfig_for(
+    trust_proxy: bool,
+    seen_cf: bool,
+    seen_direct: bool,
+) -> Option<&'static str> {
+    if !trust_proxy && seen_cf {
+        // Le socket voit l'edge Cloudflare, pas le client : tous les membres
+        // se partagent alors le même quota et se limitent mutuellement.
+        return Some(
+            "TRUST_PROXY n'est pas activé alors que le trafic arrive via Cloudflare : \
+             tous les clients partagent le quota de l'IP de l'edge. Poser TRUST_PROXY=1.",
+        );
+    }
+    if trust_proxy && seen_direct {
+        // Pire cas : on fait confiance à un en-tête que plus personne ne
+        // réécrit, donc trivialement falsifiable.
+        return Some(
+            "TRUST_PROXY=1 mais des requêtes arrivent en direct (sans cf-ray) : \
+             CF-Connecting-IP est falsifiable et les quotas contournables. \
+             Filtrer l'origine aux IP du proxy, ou retirer TRUST_PROXY.",
+        );
+    }
+    None
+}
+
+impl AppState {
+    /// Décrit une incohérence entre `TRUST_PROXY` et le trafic observé.
+    pub fn proxy_misconfig(&self) -> Option<&'static str> {
+        use std::sync::atomic::Ordering::Relaxed;
+        proxy_misconfig_for(
+            self.trust_proxy,
+            self.probe.seen_cf.load(Relaxed),
+            self.probe.seen_direct.load(Relaxed),
+        )
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -46,6 +103,8 @@ pub struct AppState {
     /// En mémoire : une redéploiement invalide les sessions (l'admin se
     /// reconnecte). Évite d'embarquer la clé admin dans le HTML du dashboard.
     pub sessions: Arc<Mutex<HashMap<String, u64>>>,
+    /// Sonde de cohérence de `trust_proxy` face au trafic réel.
+    pub probe: Arc<ProxyProbe>,
     /// `true` seulement si le serveur est DERRIÈRE un proxy de confiance qui
     /// réécrit `CF-Connecting-IP` (Cloudflare le fait). Réglable via
     /// `TRUST_PROXY=1`. Par défaut `false` : on utilise l'IP réelle du socket,
@@ -93,4 +152,42 @@ fn bump(map: &mut HashMap<String, Bucket>, key: &str, window: Duration, max: u32
     let b = map.get_mut(key).unwrap();
     b.count += 1;
     b.count <= max
+}
+
+#[cfg(test)]
+mod tests {
+    use super::proxy_misconfig_for;
+
+    #[test]
+    fn configurations_coherentes_ne_signalent_rien() {
+        // Origine exposée en direct, sans proxy : correct.
+        assert!(proxy_misconfig_for(false, false, true).is_none());
+        // Derrière Cloudflare, en lui faisant confiance : correct.
+        assert!(proxy_misconfig_for(true, true, false).is_none());
+        // Rien d'observé encore (démarrage) : on ne crie pas.
+        assert!(proxy_misconfig_for(false, false, false).is_none());
+        assert!(proxy_misconfig_for(true, false, false).is_none());
+    }
+
+    #[test]
+    fn derriere_cloudflare_sans_trust_proxy() {
+        // Tous les membres partageraient le quota de l'edge.
+        let msg = proxy_misconfig_for(false, true, false).expect("doit alerter");
+        assert!(msg.contains("TRUST_PROXY=1"));
+    }
+
+    #[test]
+    fn trust_proxy_sur_une_origine_exposee() {
+        // Le cas dangereux : on croit un en-tête que personne ne réécrit.
+        let msg = proxy_misconfig_for(true, false, true).expect("doit alerter");
+        assert!(msg.contains("falsifiable"));
+    }
+
+    #[test]
+    fn trafic_mixte_priorise_le_quota_partage() {
+        // Les deux signaux présents : sans TRUST_PROXY, la limitation est déjà
+        // dégradée pour tout le monde — c'est ça qu'on remonte d'abord.
+        let msg = proxy_misconfig_for(false, true, true).expect("doit alerter");
+        assert!(msg.contains("edge"));
+    }
 }

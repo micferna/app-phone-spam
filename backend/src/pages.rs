@@ -339,10 +339,23 @@ pub fn admin_dashboard_page(s: &serde_json::Value) -> String {
         members_html = "<tr><td colspan=4 class=\"muted\">—</td></tr>".into();
     }
 
+    // Bandeau de configuration : une TRUST_PROXY incohérente avec le trafic
+    // réel casse silencieusement la limitation de débit, dans un sens ou dans
+    // l'autre. On le met en tête du dashboard plutôt que dans les logs.
+    let warning = match s.get("proxyWarning").and_then(|v| v.as_str()) {
+        Some(msg) => format!(
+            "<div class=\"alert anim\">⚠️ <b>Configuration à revoir</b><br>{}</div>",
+            escape_html(msg)
+        ),
+        None => String::new(),
+    };
+
     format!(
         r#"<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Admin — Anti-Spam</title><style>{base}
+.alert{{background:rgba(214,64,47,.12);border:1px solid var(--danger);color:var(--fg);
+  border-radius:var(--radius);padding:16px 18px;margin-top:18px;line-height:1.5}}
 .top{{display:flex;align-items:center;justify-content:space-between;padding:28px 0 8px;flex-wrap:wrap;gap:12px}}
 .top h1{{font-size:1.6rem;letter-spacing:-.02em}}
 .live{{display:inline-flex;align-items:center;gap:8px;color:var(--muted);font-size:.9rem}}
@@ -388,7 +401,7 @@ tr.hot td{{background:rgba(224,138,30,.07)}}
 </style></head><body><div class="wrap">
 <div class="top anim"><h1>📊 Dashboard</h1>
   <span class="live"><span class="dot"></span> données en direct</span></div>
-
+{warning}
 <div class="grid">{kpis}</div>
 
 <div class="panel anim" style="animation-delay:.1s">
@@ -424,6 +437,7 @@ tr.hot td{{background:rgba(224,138,30,.07)}}
 </div>
 </div></body></html>"#,
         base = BASE_CSS,
+        warning = warning,
         kpis = kpi_html,
         camps = camp_html,
         ops = ops_html,

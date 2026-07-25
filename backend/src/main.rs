@@ -13,7 +13,7 @@ mod state;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
@@ -90,6 +90,7 @@ async fn main() {
             .and_then(|v| v.trim().parse().ok())
             .unwrap_or(70),
         sessions: Arc::new(Mutex::new(HashMap::new())),
+        probe: Arc::new(state::ProxyProbe::default()),
         trust_proxy: matches!(
             std::env::var("TRUST_PROXY").as_deref(),
             Ok("1") | Ok("true")
@@ -219,6 +220,49 @@ async fn refresh_all(st: &AppState) {
     federation::pull_peers(&st.pool, &st.federation_peers).await;
 }
 
+/// Une IP privée/loopback vient de l'infrastructure (ingress, healthcheck) et
+/// ne prouve pas que l'origine est exposée publiquement.
+fn is_public_ip(ip: &str) -> bool {
+    match ip.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => {
+            !(v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified())
+        }
+        Ok(std::net::IpAddr::V6(v6)) => {
+            // `is_unique_local`/`is_unicast_link_local` ne sont pas stables :
+            // on teste les préfixes fc00::/7 et fe80::/10 à la main.
+            let o = v6.octets();
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || (o[0] & 0xfe) == 0xfc
+                || (o[0] == 0xfe && (o[1] & 0xc0) == 0x80))
+        }
+        Err(_) => false,
+    }
+}
+
+/// Journalise l'incohérence détectée, au plus une fois par heure : c'est un
+/// problème de déploiement, pas un évènement par requête.
+fn warn_proxy_misconfig(st: &AppState) {
+    let Some(msg) = st.proxy_misconfig() else {
+        return;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let last = st.probe.last_warn.load(Ordering::Relaxed);
+    if now.saturating_sub(last) < 3600
+        || st
+            .probe
+            .last_warn
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+    {
+        return;
+    }
+    eprintln!("ATTENTION — configuration de proxy incohérente : {msg}");
+}
+
 async fn security_headers(req: Request, next: Next) -> Response {
     let mut res = next.run(req).await;
     let h = res.headers_mut();
@@ -263,6 +307,20 @@ async fn global_rate(State(st): State<AppState>, mut req: Request, next: Next) -
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|c| c.0.ip().to_string());
+    // Sonde de configuration : `cf-ray` n'est posé que par Cloudflare. On ne
+    // s'en sert PAS pour décider de faire confiance à l'en-tête d'IP (un
+    // attaquant atteignant l'origine en direct le poserait aussi) — uniquement
+    // pour signaler une `TRUST_PROXY` incohérente avec le trafic observé.
+    let via_cf = req.headers().contains_key("cf-ray");
+    if via_cf {
+        st.probe.seen_cf.store(true, Ordering::Relaxed);
+    } else if peer.as_deref().is_some_and(is_public_ip) {
+        // Les sondes internes (healthcheck, ingress) arrivent d'IP privées :
+        // seule une IP publique atteste d'une origine réellement exposée.
+        st.probe.seen_direct.store(true, Ordering::Relaxed);
+    }
+    warn_proxy_misconfig(&st);
+
     let forwarded = if st.trust_proxy {
         req.headers()
             .get("cf-connecting-ip")
@@ -281,4 +339,39 @@ async fn global_rate(State(st): State<AppState>, mut req: Request, next: Next) -
             .into_response();
     }
     next.run(req).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_public_ip;
+
+    #[test]
+    fn ip_privees_et_loopback_ne_prouvent_pas_une_origine_exposee() {
+        // Ingress, healthcheck, réseau Docker : ne doivent pas déclencher
+        // l'alerte « origine joignable en direct ».
+        for ip in [
+            "127.0.0.1",
+            "::1",
+            "10.10.40.10",
+            "172.17.0.2",
+            "192.168.1.20",
+            "169.254.1.1",
+            "fd00::1",
+            "fe80::1",
+            "0.0.0.0",
+            "pas-une-ip",
+        ] {
+            assert!(
+                !is_public_ip(ip),
+                "{ip} ne devrait pas compter comme public"
+            );
+        }
+    }
+
+    #[test]
+    fn ip_publiques_comptent() {
+        for ip in ["1.1.1.1", "8.8.8.8", "2606:4700::1111", "172.32.0.1"] {
+            assert!(is_public_ip(ip), "{ip} devrait compter comme public");
+        }
+    }
 }

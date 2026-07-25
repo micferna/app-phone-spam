@@ -304,9 +304,18 @@ class SpamScreeningService : CallScreeningService() {
 
     // --- Plages ARCEP réservées au démarchage (décision 2022-1583).
     // Réplique de backend/src/normalize.rs pour un blocage 100 % hors-ligne. ---
+    /// Outre-mer, ces racines vivent sous leur PROPRE indicatif pays (+590,
+    /// +594, +596, +262) et non sous +33 : un appel guadeloupéen arrive en
+    /// `+5909475…`. Les formes en `+339475…` restent listées car `toE164`
+    /// préfixe en +33 tout national à 10 chiffres — c'est ainsi qu'un tel
+    /// numéro composé localement nous parvient.
     private val arcepPrefixes = listOf(
+        // France métropolitaine
         "+33162", "+33163", "+33270", "+33271", "+33377", "+33378",
         "+33424", "+33425", "+33568", "+33569", "+33948", "+33949",
+        // Outre-mer, indicatif pays propre
+        "+5909475", "+5949476", "+5969477", "+2629478", "+2629479",
+        // Mêmes racines via la normalisation nationale à 10 chiffres
         "+339475", "+339476", "+339477", "+339478", "+339479",
     )
 

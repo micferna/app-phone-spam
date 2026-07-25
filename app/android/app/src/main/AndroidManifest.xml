@@ -8,6 +8,10 @@
     <uses-permission android:name="android.permission.CAMERA"/>
     <!-- Mise à jour intégrée : installer l'APK téléchargé depuis GitHub -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
+    <!-- Requis par setPersisted(true) : la vérification quotidienne de mise à
+         jour doit survivre aux redémarrages, sinon un téléphone rarement
+         rallumé ne saurait jamais qu'une version corrigée existe -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <application
         android:label="Anti-Spam"
         android:name="${applicationName}"
@@ -57,6 +61,13 @@
         <receiver
             android:name=".ReportReceiver"
             android:exported="false"/>
+
+        <!-- Vérification quotidienne des mises à jour (JobScheduler) : la
+             bannière in-app ne suffit pas, l'app n'est presque jamais ouverte -->
+        <service
+            android:name=".UpdateCheckService"
+            android:exported="false"
+            android:permission="android.permission.BIND_JOB_SERVICE"/>
 
         <!-- Tuile Réglages rapides : signaler le dernier appel en un geste,
              même une fois la notification balayée -->
