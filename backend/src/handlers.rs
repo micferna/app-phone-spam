@@ -4,14 +4,14 @@ use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use axum::extract::{Form, Path, State};
+use axum::extract::{Extension, Form, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Json, Response};
 use serde_json::{json, Value};
 
 use crate::normalize::{classify_number, is_arcep_demarchage, normalize_number};
 use crate::sms::{analyze_sms, is_suspicious_sms};
-use crate::state::AppState;
+use crate::state::{AppState, ClientIp};
 
 type Resp = (StatusCode, Json<Value>);
 type ApiResult = Result<Resp, Resp>;
@@ -26,12 +26,6 @@ fn e(code: StatusCode, msg: &str) -> Resp {
 }
 
 // --- petites primitives ---
-fn client_ip(h: &HeaderMap) -> String {
-    h.get("cf-connecting-ip")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("inconnu")
-        .to_string()
-}
 fn header<'a>(h: &'a HeaderMap, name: &str) -> &'a str {
     h.get(name).and_then(|v| v.to_str().ok()).unwrap_or("")
 }
@@ -121,13 +115,27 @@ async fn require_admin(st: &AppState, h: &HeaderMap) -> Result<(), Resp> {
 }
 
 /// Réputation d'UN opérateur (nb de numéros signalés qui lui appartiennent).
-/// Chemin chaud du lookup : on lit la seule valeur utile sous le verrou au lieu
-/// de cloner toute la HashMap à chaque appel. Recompute complet seulement quand
-/// le cache est invalidé (signalement/trust/suppression).
+///
+/// Le lookup est sur le chemin critique du filtrage d'appel : Android laisse
+/// ~5 s au total à `onScreenCall()`, réseau mobile compris. Le recalcul complet
+/// (tous les numéros signalés × recherche dans l'index ARCEP) ne doit donc pas
+/// s'y greffer — mesuré à 49 ms pour 50 000 numéros, et il retombait sur le
+/// PREMIER appel suivant chaque signalement, donc en permanence dès que
+/// l'auto-signalement est actif. On sert la valeur précédente et on rafraîchit
+/// derrière : `op_rep` ne pèse que 15 points sur 100.
+///
+/// `swap` (au lieu de load + store) ferme aussi la course qui perdait une
+/// invalidation arrivée pendant le calcul : un signalement concurrent remet le
+/// drapeau à `true` et provoque simplement un recalcul de plus.
 async fn op_reputation(st: &AppState, mnemo: &str) -> i64 {
-    if !st.rep_dirty.load(Ordering::Relaxed) {
-        return st.rep.lock().unwrap().get(mnemo).copied().unwrap_or(0);
+    if st.rep_dirty.swap(false, Ordering::Relaxed) {
+        let bg = st.clone();
+        tokio::spawn(async move { recompute_reputation(&bg).await });
     }
+    st.rep.lock().unwrap().get(mnemo).copied().unwrap_or(0)
+}
+
+async fn recompute_reputation(st: &AppState) {
     let numbers: Vec<String> = sqlx::query_scalar("SELECT DISTINCT number FROM reports")
         .fetch_all(&st.pool)
         .await
@@ -137,10 +145,7 @@ async fn op_reputation(st: &AppState, mnemo: &str) -> i64 {
         idx.reputation(&numbers)
     };
     let map: HashMap<String, i64> = rep_list.into_iter().map(|(m, _n, c)| (m, c)).collect();
-    let val = map.get(mnemo).copied().unwrap_or(0);
     *st.rep.lock().unwrap() = map;
-    st.rep_dirty.store(false, Ordering::Relaxed);
-    val
 }
 
 // ===================== endpoints =====================
@@ -180,7 +185,9 @@ pub async fn lookup(
     //  - catégories signalées,
     //  - campagne : numéros distincts de la plage, membres de confiance, 24 h
     //    (le filtre `trusted` était absent ici = contournement anti-poison),
-    //  - retours « spam » / « pas spam » des membres.
+    //  - retours « spam » / « pas spam » des membres de CONFIANCE (le filtre
+    //    manquait ici : un membre explicitement exclu par l'admin pouvait
+    //    encore blanchir n'importe quel numéro pour tout le groupe).
     let (count, cats, burst, fb_spam, fb_ok): (i64, Option<String>, i64, i64, i64) =
         sqlx::query_as(
             "SELECT \
@@ -190,8 +197,10 @@ pub async fn lookup(
                (SELECT COUNT(DISTINCT r.number) FROM reports r JOIN users u ON u.id = r.user_id \
                   WHERE r.number >= ? AND r.number < ? AND u.trusted = 1 \
                   AND r.created_at > datetime('now','-1 day')), \
-               (SELECT COUNT(*) FROM feedback WHERE number = ? AND was_spam = 1), \
-               (SELECT COUNT(*) FROM feedback WHERE number = ? AND was_spam = 0)",
+               (SELECT COUNT(*) FROM feedback f JOIN users u ON u.id = f.user_id \
+                  WHERE f.number = ? AND f.was_spam = 1 AND u.trusted = 1), \
+               (SELECT COUNT(*) FROM feedback f JOIN users u ON u.id = f.user_id \
+                  WHERE f.number = ? AND f.was_spam = 0 AND u.trusted = 1)",
         )
         .bind(&number)
         .bind(&number)
@@ -257,7 +266,7 @@ pub async fn lookup(
     // explicitement blanchi ce numéro (« pas spam »), pour ne pas bloquer un
     // fixe local légitime.
     let hard = count > 0 || imported.is_some() || arcep;
-    let member_cleared = fb_ok > fb_spam && fb_ok > 0;
+    let member_cleared = is_member_cleared(fb_spam, fb_ok);
     let suspicious = is_suspicious(
         hard,
         campaign,
@@ -288,6 +297,18 @@ pub async fn lookup(
         "campaignActive": campaign,
         "suspicious": suspicious,
     }))
+}
+
+/// Les membres ont-ils blanchi ce numéro au point de NEUTRALISER les
+/// heuristiques (campagne, seuil de score) ?
+///
+/// Il faut **au moins deux** retours « pas spam » : un seul membre — donc un
+/// seul téléphone volé, ou un seul compte complaisant — ne doit pas pouvoir
+/// rouvrir la porte à une campagne pour tout le groupe. Un retour isolé
+/// continue de faire baisser le score (voir `suspicion_score`), ce qui suffit
+/// à corriger vite un faux positif ordinaire.
+fn is_member_cleared(fb_spam: i64, fb_ok: i64) -> bool {
+    fb_ok >= 2 && fb_ok > fb_spam
 }
 
 /// Score de confiance 0-100 + campagne active. Combine signalements, ARCEP,
@@ -353,14 +374,11 @@ fn is_suspicious(
 pub async fn create_report(
     State(st): State<AppState>,
     headers: HeaderMap,
+    Extension(ClientIp(ip)): Extension<ClientIp>,
     Json(body): Json<Value>,
 ) -> ApiResult {
     let (uid, _) = require_user(&st, &headers).await?;
-    if !st.rate_ok(
-        &format!("report:{}", client_ip(&headers)),
-        Duration::from_secs(3600),
-        60,
-    ) {
+    if !st.rate_ok(&format!("report:{ip}"), Duration::from_secs(3600), 60) {
         return Err(e(
             StatusCode::TOO_MANY_REQUESTS,
             "Trop de requêtes, réessaie plus tard",
@@ -406,30 +424,121 @@ pub async fn delete_report(
         .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "erreur base"))?;
     if res.rows_affected() > 0 {
         st.rep_dirty.store(true, Ordering::Relaxed);
+        bump_list_version(&st.pool).await;
     }
     ok(json!({ "number": number, "removed": res.rows_affected() > 0 }))
 }
 
-pub async fn numbers(State(st): State<AppState>, headers: HeaderMap) -> ApiResult {
-    require_user(&st, &headers).await?;
-    // Liste de blocage servie aux téléphones : uniquement les signalements
-    // des membres de confiance (anti-empoisonnement).
-    let community: Vec<(String, i64, Option<String>)> = sqlx::query_as(
-        "SELECT r.number, COUNT(*) AS c, MAX(r.created_at) AS last \
-         FROM reports r JOIN users u ON u.id = r.user_id \
-         WHERE u.trusted = 1 GROUP BY r.number",
+/// Paramètres de synchro incrémentale de `/api/numbers`.
+#[derive(serde::Deserialize)]
+pub struct NumbersQuery {
+    /// Horodatage `syncedAt` renvoyé par la synchro précédente.
+    since: Option<String>,
+    /// `listVersion` de la synchro précédente.
+    v: Option<i64>,
+}
+
+/// Un `since` n'est accepté que sous la forme exacte produite par SQLite
+/// (`datetime('now')`), sinon on retombe sur une synchro complète : la valeur
+/// part dans une comparaison SQL, on ne laisse pas passer n'importe quoi.
+fn valid_sqlite_ts(s: &str) -> bool {
+    let b = s.as_bytes();
+    s.len() == 19
+        && b.iter().enumerate().all(|(i, c)| match i {
+            4 | 7 => *c == b'-',
+            10 => *c == b' ',
+            13 | 16 => *c == b':',
+            _ => c.is_ascii_digit(),
+        })
+}
+
+/// Compteur incrémenté à chaque **retrait** de la liste de blocage. Les ajouts
+/// se propagent par horodatage ; les retraits, eux, sont invisibles d'un delta
+/// — un numéro supprimé resterait bloqué sur les téléphones. Plutôt qu'un
+/// journal de pierres tombales, on force une resynchro complète : les retraits
+/// sont rares (retrait d'un signalement, faux positif écarté par l'admin),
+/// les ajouts sont le cas courant.
+pub(crate) async fn bump_list_version(pool: &sqlx::SqlitePool) {
+    let _ = sqlx::query(
+        "INSERT INTO meta (key, value) VALUES ('list_version', '1') \
+         ON CONFLICT (key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)",
     )
+    .execute(pool)
+    .await;
+}
+
+async fn list_version(pool: &sqlx::SqlitePool) -> i64 {
+    sqlx::query_scalar::<_, String>("SELECT value FROM meta WHERE key = 'list_version'")
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+}
+
+/// Liste de blocage servie aux téléphones : uniquement les signalements des
+/// membres de confiance (anti-empoisonnement).
+///
+/// C'est la plus grosse réponse de l'API (3,8 Mo pour 50 000 numéros) et l'app
+/// la redemande à chaque ouverture. Avec `?since=…&v=…`, on ne renvoie que ce
+/// qui a bougé depuis — quelques centaines d'octets dans le cas courant. Le
+/// client repart de `syncedAt` / `listVersion` à la synchro suivante ; il suffit
+/// d'omettre les paramètres pour forcer une synchro complète.
+pub async fn numbers(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<NumbersQuery>,
+) -> ApiResult {
+    require_user(&st, &headers).await?;
+
+    let version = list_version(&st.pool).await;
+    // Delta seulement si le client est à jour sur les retraits : sinon sa
+    // liste contient des numéros qui n'ont plus lieu d'être bloqués.
+    let since = match (&q.since, q.v) {
+        (Some(s), Some(v)) if v == version && valid_sqlite_ts(s) => Some(s.as_str()),
+        _ => None,
+    };
+    let synced_at: String = sqlx::query_scalar("SELECT datetime('now')")
+        .fetch_one(&st.pool)
+        .await
+        .unwrap_or_default();
+
+    let community: Vec<(String, i64, Option<String>)> = match since {
+        Some(ts) => sqlx::query_as(
+            "SELECT r.number, COUNT(*) AS c, MAX(r.created_at) AS last \
+             FROM reports r JOIN users u ON u.id = r.user_id \
+             WHERE u.trusted = 1 GROUP BY r.number HAVING last > ?",
+        )
+        .bind(ts),
+        None => sqlx::query_as(
+            "SELECT r.number, COUNT(*) AS c, MAX(r.created_at) AS last \
+             FROM reports r JOIN users u ON u.id = r.user_id \
+             WHERE u.trusted = 1 GROUP BY r.number",
+        ),
+    }
     .fetch_all(&st.pool)
     .await
     .unwrap_or_default();
-    let imported: Vec<(String, String, Option<String>)> =
-        sqlx::query_as("SELECT number, source, label FROM imported_numbers")
-            .fetch_all(&st.pool)
-            .await
-            .unwrap_or_default();
+
+    let imported: Vec<(String, String, Option<String>)> = match since {
+        Some(ts) => sqlx::query_as(
+            "SELECT number, source, label FROM imported_numbers WHERE imported_at > ?",
+        )
+        .bind(ts),
+        None => sqlx::query_as("SELECT number, source, label FROM imported_numbers"),
+    }
+    .fetch_all(&st.pool)
+    .await
+    .unwrap_or_default();
+
     ok(json!({
         "community": community.iter().map(|(n, c, l)| json!({"number": n, "reportCount": c, "lastReport": l})).collect::<Vec<_>>(),
         "imported": imported.iter().map(|(n, s, l)| json!({"number": n, "source": s, "label": l})).collect::<Vec<_>>(),
+        // `false` = delta à fusionner ; `true` = la liste reçue fait autorité.
+        "full": since.is_none(),
+        "syncedAt": synced_at,
+        "listVersion": version,
     }))
 }
 
@@ -518,13 +627,10 @@ pub async fn check_sms(
 pub async fn bootstrap(
     State(st): State<AppState>,
     headers: HeaderMap,
+    Extension(ClientIp(ip)): Extension<ClientIp>,
     Json(body): Json<Value>,
 ) -> ApiResult {
-    if !st.rate_ok(
-        &format!("bootstrap:{}", client_ip(&headers)),
-        Duration::from_secs(3600),
-        5,
-    ) {
+    if !st.rate_ok(&format!("bootstrap:{ip}"), Duration::from_secs(3600), 5) {
         return Err(e(
             StatusCode::TOO_MANY_REQUESTS,
             "Trop de requêtes, réessaie plus tard",
@@ -641,6 +747,10 @@ pub async fn set_trust(
         return Err(e(StatusCode::NOT_FOUND, "Membre introuvable"));
     }
     st.rep_dirty.store(true, Ordering::Relaxed);
+    // Dans les DEUX sens : retirer la confiance sort ses numéros de la liste,
+    // la rendre les y remet avec des horodatages anciens qu'un delta ne
+    // rattraperait pas. On force donc une resynchro complète.
+    bump_list_version(&st.pool).await;
     ok(json!({ "id": id, "trusted": trusted }))
 }
 
@@ -677,6 +787,7 @@ pub async fn delete_user(
     let removed = res.rows_affected() > 0;
     if removed {
         st.rep_dirty.store(true, Ordering::Relaxed);
+        bump_list_version(&st.pool).await;
     }
     ok(json!({ "deleted": removed }))
 }
@@ -696,14 +807,10 @@ pub async fn create_invite(State(st): State<AppState>, headers: HeaderMap) -> Ap
 // --- public : consommer une invitation → crée le membre + sa clé ---
 pub async fn redeem_invite(
     State(st): State<AppState>,
-    headers: HeaderMap,
+    Extension(ClientIp(ip)): Extension<ClientIp>,
     Json(body): Json<Value>,
 ) -> ApiResult {
-    if !st.rate_ok(
-        &format!("invite:{}", client_ip(&headers)),
-        Duration::from_secs(3600),
-        10,
-    ) {
+    if !st.rate_ok(&format!("invite:{ip}"), Duration::from_secs(3600), 10) {
         return Err(e(StatusCode::TOO_MANY_REQUESTS, "Trop de requêtes"));
     }
     let token = body["token"].as_str().unwrap_or("");
@@ -825,15 +932,20 @@ pub async fn bulk_import(
         .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
     for raw in &list {
         match raw.as_str().and_then(normalize_number) {
+            // `added` ne compte que les insertions réellement réussies : il
+            // était incrémenté même quand l'écriture échouait.
             Some(n) => {
-                let _ = sqlx::query(
+                let res = sqlx::query(
                     "INSERT OR REPLACE INTO imported_numbers (number, source, label) VALUES (?, 'import-admin', ?)",
                 )
                 .bind(&n)
                 .bind(&label)
                 .execute(&mut *tx)
                 .await;
-                added += 1;
+                match res {
+                    Ok(_) => added += 1,
+                    Err(_) => skipped += 1,
+                }
             }
             None => skipped += 1,
         }
@@ -858,6 +970,9 @@ pub async fn delete_imported(
         .execute(&st.pool)
         .await
         .map_err(|_| e(StatusCode::INTERNAL_SERVER_ERROR, "db"))?;
+    if res.rows_affected() > 0 {
+        bump_list_version(&st.pool).await;
+    }
     ok(json!({ "number": number, "removed": res.rows_affected() }))
 }
 
@@ -873,14 +988,10 @@ pub async fn update_lists(State(st): State<AppState>, headers: HeaderMap) -> Api
 // --- demandes d'adhésion (public, formulaire HTML) ---
 pub async fn join_request(
     State(st): State<AppState>,
-    headers: HeaderMap,
+    Extension(ClientIp(ip)): Extension<ClientIp>,
     Form(form): Form<HashMap<String, String>>,
 ) -> Response {
-    if !st.rate_ok(
-        &format!("join:{}", client_ip(&headers)),
-        Duration::from_secs(3600),
-        5,
-    ) {
+    if !st.rate_ok(&format!("join:{ip}"), Duration::from_secs(3600), 5) {
         return confirmation(
             "Trop de demandes",
             "Réessaie plus tard.",
@@ -914,7 +1025,7 @@ pub async fn join_request(
             .bind(&name)
             .bind(&contact)
             .bind(&message)
-            .bind(client_ip(&headers))
+            .bind(&ip)
             .execute(&st.pool)
             .await;
     confirmation(
@@ -1040,12 +1151,11 @@ pub async fn feedback(
 
 // --- fédération : flux public des numéros confirmés (≥2 membres distincts),
 // anonymisé (numéro + nb de signalements), pour qu'un autre serveur s'y abonne.
-pub async fn federation_feed(State(st): State<AppState>, headers: HeaderMap) -> ApiResult {
-    if !st.rate_ok(
-        &format!("fedfeed:{}", client_ip(&headers)),
-        Duration::from_secs(60),
-        30,
-    ) {
+pub async fn federation_feed(
+    State(st): State<AppState>,
+    Extension(ClientIp(ip)): Extension<ClientIp>,
+) -> ApiResult {
+    if !st.rate_ok(&format!("fedfeed:{ip}"), Duration::from_secs(60), 30) {
         return Err(e(StatusCode::TOO_MANY_REQUESTS, "Trop de requêtes"));
     }
     // Anti-empoisonnement à l'échelle de la fédération : seuls les
@@ -1149,7 +1259,10 @@ async fn collect_stats(st: &AppState) -> Value {
         "activeCampaigns": campaigns.iter().map(|(p,c)| json!({"prefix":p,"count":c})).collect::<Vec<_>>(),
         "recentReports": recent.iter().map(|(n,c,l)| json!({"number":n,"reportCount":c,"lastReport":l})).collect::<Vec<_>>(),
         "topCategories": categories.iter().map(|(cat,c)| json!({"category":cat,"count":c})).collect::<Vec<_>>(),
-        "members": member_rows.iter().map(|(name,trusted,total,last24)| json!({"name":name,"trusted":*trusted != 0,"total":total,"reports24h":last24})).collect::<Vec<_>>(),
+        // Clé distincte de `members` (le nombre) : les deux portaient le même
+        // nom, la liste écrasait le compteur et le KPI « membres » du
+        // dashboard affichait toujours 0.
+        "memberActivity": member_rows.iter().map(|(name,trusted,total,last24)| json!({"name":name,"trusted":*trusted != 0,"total":total,"reports24h":last24})).collect::<Vec<_>>(),
     })
 }
 
@@ -1282,7 +1395,32 @@ fn confirmation(title: &str, body_html: &str, code: StatusCode) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_suspicious, suspicion_score};
+    use super::{is_member_cleared, is_suspicious, suspicion_score, valid_sqlite_ts};
+
+    #[test]
+    fn since_rejette_ce_qui_nest_pas_un_horodatage() {
+        assert!(valid_sqlite_ts("2026-07-25 12:34:56"));
+        for bad in [
+            "2026-07-25T12:34:56",  // ISO avec T
+            "2026-07-25 12:34:5",   // trop court
+            "2026-07-25 12:34:56 ", // trop long
+            "' OR 1=1 --        ",  // injection (bonne longueur)
+            "",
+        ] {
+            assert!(!valid_sqlite_ts(bad), "devrait rejeter: {bad:?}");
+        }
+    }
+
+    #[test]
+    fn un_seul_pas_spam_ne_blanchit_pas() {
+        // Un membre isolé ne doit pas pouvoir rouvrir une campagne au groupe…
+        assert!(!is_member_cleared(0, 1));
+        // …mais deux membres concordants, oui.
+        assert!(is_member_cleared(0, 2));
+        // Et la majorité doit rester du côté « pas spam ».
+        assert!(!is_member_cleared(3, 2));
+        assert!(is_member_cleared(1, 3));
+    }
 
     #[test]
     fn signal_fiable_bloque_toujours() {

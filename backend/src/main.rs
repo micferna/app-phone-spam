@@ -12,11 +12,12 @@ mod sms;
 mod state;
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Request, State};
 use axum::http::{HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Json, Response};
@@ -25,7 +26,7 @@ use axum::Router;
 use serde_json::json;
 
 use operators::OperatorIndex;
-use state::AppState;
+use state::{AppState, ClientIp};
 
 #[tokio::main]
 async fn main() {
@@ -89,7 +90,17 @@ async fn main() {
             .and_then(|v| v.trim().parse().ok())
             .unwrap_or(70),
         sessions: Arc::new(Mutex::new(HashMap::new())),
+        trust_proxy: matches!(
+            std::env::var("TRUST_PROXY").as_deref(),
+            Ok("1") | Ok("true")
+        ),
     };
+    if !st.trust_proxy {
+        println!(
+            "Limitation de débit basée sur l'IP du socket. Derrière Cloudflare \
+             ou un reverse-proxy, poser TRUST_PROXY=1 pour utiliser CF-Connecting-IP."
+        );
+    }
 
     // Sauvegarde quotidienne de la base (rotation 7 jours sur le volume).
     {
@@ -131,7 +142,13 @@ async fn main() {
             post(handlers::reject_join),
         )
         .route("/api/reports", post(handlers::create_report))
-        .route("/api/reports/bulk", post(handlers::bulk_import))
+        // L'import en masse accepte 5 000 numéros par lot (~80 ko) : le plafond
+        // global de 8 ko le coupait à ~510 avec un 413. Limite dédiée, route
+        // réservée à l'admin authentifié.
+        .route(
+            "/api/reports/bulk",
+            post(handlers::bulk_import).layer(DefaultBodyLimit::max(256 * 1024)),
+        )
         .route("/api/reports/{number}", delete(handlers::delete_report))
         .route("/api/imported/{number}", delete(handlers::delete_imported))
         .route("/api/lookup/{number}", get(handlers::lookup))
@@ -165,7 +182,15 @@ async fn main() {
     let addr = format!("0.0.0.0:{port}");
     let listener = tokio::net::TcpListener::bind(&addr).await.expect("bind");
     println!("Backend anti-spam (Rust) démarré sur {addr}");
-    axum::serve(listener, app).await.expect("serve");
+    // `into_make_service_with_connect_info` : sans ça, l'IP réelle du client
+    // n'est pas disponible dans les extensions et la limitation de débit
+    // n'aurait plus qu'un compteur global unique.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .expect("serve");
 }
 
 fn env_nonempty(k: &str) -> Option<String> {
@@ -223,13 +248,31 @@ async fn security_headers(req: Request, next: Next) -> Response {
     res
 }
 
-async fn global_rate(State(st): State<AppState>, req: Request, next: Next) -> Response {
-    let ip = req
-        .headers()
-        .get("cf-connecting-ip")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("inconnu")
-        .to_string();
+/// Résout l'IP du client et la dépose dans les extensions de la requête, puis
+/// applique le plafond global.
+///
+/// L'IP vient du SOCKET, pas d'un en-tête : `CF-Connecting-IP` est envoyé par
+/// le client et n'a de valeur que derrière un proxy qui l'écrase (Cloudflare).
+/// Le croire sans condition rendait tous les quotas inopérants — il suffisait
+/// de faire tourner l'en-tête à chaque requête — et, en accès direct (sans
+/// proxy), il n'y avait plus qu'un seul compteur partagé par tout le monde :
+/// un client pouvait saturer le plafond global et faire échouer les lookups
+/// des membres, donc désarmer le filtrage de tout le groupe.
+async fn global_rate(State(st): State<AppState>, mut req: Request, next: Next) -> Response {
+    let peer = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|c| c.0.ip().to_string());
+    let forwarded = if st.trust_proxy {
+        req.headers()
+            .get("cf-connecting-ip")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.chars().take(64).collect::<String>())
+    } else {
+        None
+    };
+    let ip = forwarded.or(peer).unwrap_or_else(|| "inconnu".into());
+    req.extensions_mut().insert(ClientIp(ip.clone()));
     if !st.rate_ok(&format!("global:{ip}"), Duration::from_secs(60), 240) {
         return (
             StatusCode::TOO_MANY_REQUESTS,

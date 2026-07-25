@@ -181,6 +181,20 @@ async fn fetch_and_apply(
         return Err("source vide, données conservées".into());
     }
 
+    // Le rafraîchissement remplace la source entière. On repère si des numéros
+    // en DISPARAISSENT : c'est le seul cas qui oblige les téléphones à une
+    // resynchro complète (un delta ne sait pas exprimer un retrait). Une source
+    // qui ne fait qu'ajouter — le cas normal — n'invalide rien.
+    let before: Vec<String> =
+        sqlx::query_scalar("SELECT number FROM imported_numbers WHERE source = ?")
+            .bind(src.name)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+    let after: std::collections::HashSet<&str> =
+        parsed.numbers.iter().map(String::as_str).collect();
+    let dropped = before.iter().any(|n| !after.contains(n.as_str()));
+
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     sqlx::query("DELETE FROM imported_prefixes WHERE source = ?")
         .bind(src.name)
@@ -215,5 +229,8 @@ async fn fetch_and_apply(
         .map_err(|e| e.to_string())?;
     }
     tx.commit().await.map_err(|e| e.to_string())?;
+    if dropped {
+        crate::handlers::bump_list_version(pool).await;
+    }
     Ok((parsed.prefixes.len(), parsed.numbers.len()))
 }

@@ -278,6 +278,25 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
+  /// Android 13+ sait proposer l'ajout de la tuile par une boîte de dialogue
+  /// système ; avant, il faut passer par le crayon du volet des réglages
+  /// rapides — on explique alors où chercher plutôt que de ne rien faire.
+  Future<void> _addQuickTile() async {
+    final messenger = ScaffoldMessenger.of(context);
+    var prompted = false;
+    try {
+      prompted = await _native.invokeMethod<bool>('addQuickTile') ?? false;
+    } catch (_) {}
+    if (!prompted) {
+      messenger.showSnackBar(const SnackBar(
+        content: Text(
+            'Ouvre le volet des réglages rapides, appuie sur le crayon ✏️ et '
+            'fais glisser « Signaler l\'appel » parmi les tuiles actives.'),
+        duration: Duration(seconds: 6),
+      ));
+    }
+  }
+
   Future<void> _setMode(String mode) async {
     setState(() => _mode = mode);
     final prefs = await SharedPreferences.getInstance();
@@ -470,6 +489,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   Future<void> _logout() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(kPrefApiKey);
+    // Le compte suivant peut appartenir à un autre groupe : on ne lui laisse
+    // ni la liste de blocage ni le curseur de synchro du précédent.
+    await prefs.remove(kPrefCachedNumbers);
+    await prefs.remove(kPrefGroupCommunity);
+    await prefs.remove(kPrefGroupSince);
+    await prefs.remove(kPrefGroupVersion);
     widget.onLogout();
   }
 
@@ -642,6 +667,18 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   'Un numéro enregistré dans tes contacts sonne toujours '
                   'normalement (évite les faux positifs).'),
             ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.bolt),
+              title: const Text('Raccourci « Signaler l\'appel »'),
+              subtitle: const Text(
+                  'Ajoute une tuile aux réglages rapides pour signaler le '
+                  'dernier appel au groupe, même après avoir balayé la '
+                  'notification.'),
+              isThreeLine: true,
+              trailing: const Icon(Icons.add_circle_outline),
+              onTap: _addQuickTile,
+            ),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               value: _smsFilter,
@@ -649,8 +686,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               title: const Text('Détecter les SMS suspects'),
               subtitle: const Text(
                   'Analyse les SMS entrants (arnaques, faux colis, phishing) '
-                  'et t\'alerte. Ne bloque pas le SMS (impossible sans être '
-                  'l\'app SMS par défaut).'),
+                  'et t\'alerte. Le contenu du SMS reste sur ton téléphone : '
+                  'seul le numéro de l\'expéditeur est vérifié auprès du '
+                  'groupe. Ne bloque pas le SMS (impossible sans être l\'app '
+                  'SMS par défaut).'),
             ),
             const SizedBox(height: 16),
             Text('Numéros signalés par le groupe',
@@ -820,18 +859,19 @@ class _HistoryTabState extends State<HistoryTab> with WidgetsBindingObserver {
   }
 
   Future<void> _whitelistNumber(String number) async {
+    final normalized = normalizeFr(number);
     final p = await SharedPreferences.getInstance();
     final raw = p.getString(kPrefWhitelist);
     final list = raw != null
         ? (jsonDecode(raw) as List).map((e) => '$e').toList()
         : <String>[];
-    if (!list.contains(number)) {
-      list.add(number);
+    if (!list.contains(normalized)) {
+      list.add(normalized);
       await p.setString(kPrefWhitelist, jsonEncode(list));
     }
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('$number ajouté à la whitelist.')),
+        SnackBar(content: Text('$normalized ajouté à la whitelist.')),
       );
     }
   }
@@ -1042,6 +1082,9 @@ class _ReportSheetState extends State<ReportSheet> {
   bool _busy = false;
 
   Future<void> _send() async {
+    // Capturé AVANT le pop : après, le contexte de cette feuille est démonté
+    // et `ScaffoldMessenger.of(context)` remonte un arbre désactivé.
+    final messenger = ScaffoldMessenger.of(context);
     setState(() {
       _busy = true;
       _error = null;
@@ -1054,7 +1097,7 @@ class _ReportSheetState extends State<ReportSheet> {
       );
       if (!mounted) return;
       Navigator.pop(context, true);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      messenger.showSnackBar(SnackBar(
         content: Text('Numéro signalé — $count signalement'
             '${count > 1 ? 's' : ''} au total dans le groupe.'),
       ));

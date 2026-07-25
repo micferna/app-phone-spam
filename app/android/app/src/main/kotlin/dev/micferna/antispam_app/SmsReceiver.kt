@@ -15,9 +15,12 @@ import java.net.URL
 import kotlin.concurrent.thread
 
 /**
- * Reçoit les SMS entrants (sans être l'app SMS par défaut) et les vérifie
- * auprès du serveur (/api/check-sms) : expéditeur connu + heuristiques
- * anti-smishing. Si suspect → notification d'alerte. On ne peut pas
+ * Reçoit les SMS entrants (sans être l'app SMS par défaut) et les analyse.
+ *
+ * Répartition volontaire du travail : le **texte reste sur le téléphone**
+ * (SmsHeuristics), seul le **numéro de l'expéditeur** est envoyé au serveur,
+ * qui est le seul à connaître sa réputation dans le groupe. Le verdict est
+ * l'union des deux. Si suspect → notification d'alerte. On ne peut pas
  * bloquer/supprimer le SMS (réservé à l'app SMS par défaut).
  */
 class SmsReceiver : BroadcastReceiver() {
@@ -36,9 +39,17 @@ class SmsReceiver : BroadcastReceiver() {
         val sender = messages[0].displayOriginatingAddress ?: return
         val body = messages.joinToString("") { it.displayMessageBody ?: "" }
 
+        // Analyse du contenu : 100 % locale, avant tout accès réseau.
+        val local = SmsHeuristics.analyze(body)
+
         val pending = goAsync()
         thread {
+            val reasons = local.signals.toMutableList()
+            var senderSuspicious = false
+            var canReport = false
             try {
+                // Le corps du SMS n'est PAS transmis : le serveur ne se prononce
+                // que sur la réputation de l'expéditeur.
                 val conn = URL("$serverUrl/api/check-sms").openConnection() as HttpURLConnection
                 conn.requestMethod = "POST"
                 conn.doOutput = true
@@ -47,26 +58,26 @@ class SmsReceiver : BroadcastReceiver() {
                 conn.connectTimeout = 4000
                 conn.readTimeout = 4000
                 conn.outputStream.write(
-                    JSONObject().put("sender", sender).put("text", body).toString().toByteArray()
+                    JSONObject().put("sender", sender).toString().toByteArray()
                 )
                 val json = JSONObject(conn.inputStream.bufferedReader().readText())
                 conn.disconnect()
-
-                if (json.optBoolean("suspicious")) {
-                    val reasons = json.optJSONArray("reasons")
-                    val reasonText = buildString {
-                        if (reasons != null) {
-                            for (i in 0 until reasons.length()) {
-                                if (i > 0) append(" · ")
-                                append(reasons.optString(i))
-                            }
-                        }
-                    }.ifEmpty { "signaux d'arnaque détectés" }
-                    notifySms(context, sender, body, reasonText, json.optBoolean("canReport"))
-                    History.log(context, "sms", sender, "suspect", "SMS suspect", "")
+                senderSuspicious = json.optBoolean("suspicious")
+                canReport = json.optBoolean("canReport")
+                json.optJSONArray("reasons")?.let { arr ->
+                    for (i in 0 until arr.length()) reasons += arr.optString(i)
                 }
             } catch (_: Exception) {
-                // Serveur injoignable : on ne dérange pas.
+                // Serveur injoignable : l'analyse locale suffit à alerter.
+            }
+
+            try {
+                if (local.suspicious || senderSuspicious) {
+                    val reasonText = reasons.distinct().joinToString(" · ")
+                        .ifEmpty { "signaux d'arnaque détectés" }
+                    notifySms(context, sender, body, reasonText, canReport)
+                    History.log(context, "sms", sender, "suspect", "SMS suspect", "")
+                }
             } finally {
                 pending.finish()
             }

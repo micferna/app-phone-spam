@@ -38,24 +38,23 @@ class MainActivity : FlutterActivity() {
                         }
                         result.success(null)
                     }
+                    // Les deux autorisations sont demandées en UN SEUL appel :
+                    // Android n'affiche qu'un dialogue à la fois, et un second
+                    // requestPermissions() lancé pendant que le premier est à
+                    // l'écran est ignoré — l'autorisation « Raccrocher » n'était
+                    // donc jamais demandée.
                     "requestNotifPermission" -> {
-                        if (Build.VERSION.SDK_INT >= 33 &&
-                            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
-                                != PackageManager.PERMISSION_GRANTED
-                        ) {
-                            requestPermissions(
-                                arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
-                                REQUEST_NOTIF
-                            )
+                        val wanted = mutableListOf<String>()
+                        if (Build.VERSION.SDK_INT >= 33) {
+                            wanted += android.Manifest.permission.POST_NOTIFICATIONS
                         }
                         // Permet le bouton « Raccrocher » de l'écran d'alerte.
-                        if (checkSelfPermission(android.Manifest.permission.ANSWER_PHONE_CALLS)
-                            != PackageManager.PERMISSION_GRANTED
-                        ) {
-                            requestPermissions(
-                                arrayOf(android.Manifest.permission.ANSWER_PHONE_CALLS),
-                                REQUEST_ANSWER
-                            )
+                        wanted += android.Manifest.permission.ANSWER_PHONE_CALLS
+                        val missing = wanted.filter {
+                            checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+                        }
+                        if (missing.isNotEmpty()) {
+                            requestPermissions(missing.toTypedArray(), REQUEST_NOTIF)
                         }
                         result.success(null)
                     }
@@ -188,6 +187,33 @@ class MainActivity : FlutterActivity() {
                             }.start()
                         }
                     }
+                    // Propose d'ajouter la tuile « Signaler l'appel » au volet
+                    // des réglages rapides. Android 13+ sait le demander par
+                    // une boîte de dialogue ; avant, l'ajout est purement
+                    // manuel (l'app affiche alors la marche à suivre).
+                    "addQuickTile" -> {
+                        if (Build.VERSION.SDK_INT >= 33) {
+                            try {
+                                getSystemService(android.app.StatusBarManager::class.java)
+                                    .requestAddTileService(
+                                        android.content.ComponentName(
+                                            this, ReportTileService::class.java
+                                        ),
+                                        "Signaler l'appel",
+                                        android.graphics.drawable.Icon.createWithResource(
+                                            this, android.R.drawable.stat_sys_warning
+                                        ),
+                                        {},
+                                        {},
+                                    )
+                                result.success(true)
+                            } catch (_: Exception) {
+                                result.success(false)
+                            }
+                        } else {
+                            result.success(false)
+                        }
+                    }
                     "getHistory" -> {
                         val file = File(filesDir, History.FILE)
                         result.success(if (file.exists()) file.readText() else "")
@@ -297,7 +323,6 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val REQUEST_ROLE = 1001
         private const val REQUEST_NOTIF = 1002
-        private const val REQUEST_ANSWER = 1003
         private const val REQUEST_CONTACTS = 1004
         private const val REQUEST_SMS = 1005
     }

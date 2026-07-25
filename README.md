@@ -100,13 +100,23 @@ sans ouvrir l'app.
   contacts n'est jamais filtré, pour éviter les faux positifs.
 - **Cache hors-ligne** : la liste des numéros connus est synchronisée
   localement, donc le blocage/silence reste instantané et fiable même si le
-  serveur est lent ou injoignable.
+  serveur est lent ou injoignable. La synchro est **incrémentale** : l'app
+  renvoie le curseur de la dernière synchro et ne reçoit que les changements
+  (222 Ko à la première synchro, **92 octets** ensuite tant que rien ne bouge).
+- **Raccourci « Signaler l'appel »** : une tuile des réglages rapides signale
+  au groupe le dernier appel filtré, sans ouvrir l'app — utile quand la
+  notification a déjà été balayée. Le numéro vient du journal local, aucune
+  permission de lecture du journal d'appels système n'est demandée.
 - **Détection des SMS suspects** (opt-in) : un `SmsReceiver` (permission
-  `RECEIVE_SMS`) analyse chaque SMS entrant via `/api/check-sms`
-  (vérification de l'expéditeur + heuristiques anti-smishing : liens
-  raccourcis, marques usurpées, mots-clés d'arnaque) et **alerte** si
-  suspect. Il ne peut pas *bloquer* le SMS (réservé à l'app SMS par défaut),
-  seulement prévenir. Les SMS suspects apparaissent aussi dans l'Historique.
+  `RECEIVE_SMS`) analyse chaque SMS entrant et **alerte** si suspect. Le
+  travail est réparti pour que **le contenu du SMS ne quitte jamais le
+  téléphone** : les heuristiques anti-smishing (liens raccourcis, marques
+  usurpées, mots-clés d'arnaque) tournent en local dans `SmsHeuristics.kt`,
+  et seul le **numéro de l'expéditeur** part vers `/api/check-sms`, dont le
+  serveur est seul à connaître la réputation. Corollaire : la détection
+  fonctionne aussi serveur injoignable. Il ne peut pas *bloquer* le SMS
+  (réservé à l'app SMS par défaut), seulement prévenir. Les SMS suspects
+  apparaissent aussi dans l'Historique.
 
 ## Le backend
 
@@ -167,7 +177,7 @@ Les routes admin exigent `X-Admin-Key`.
 | `POST /api/reports` `{number, category?, comment?}` | membre | Signaler un numéro |
 | `DELETE /api/reports/:number` | membre | Retirer son propre signalement |
 | `GET /api/lookup/:number` | membre | Vérification temps réel |
-| `GET /api/numbers` | membre | Liste complète (synchro) |
+| `GET /api/numbers` `?since=&v=` | membre | Liste de blocage (synchro incrémentale, voir plus bas) |
 | `GET /api/join-requests` | admin | Lister les demandes en attente |
 | `POST /api/join-requests/:id/approve` | admin | Approuver → crée le membre + clé |
 | `POST /api/join-requests/:id/reject` | admin | Rejeter une demande |
@@ -176,7 +186,7 @@ Les routes admin exigent `X-Admin-Key`.
 | `DELETE /api/users/{id}` | admin | Supprimer un membre + ses données (RGPD) |
 | `POST /api/reports/bulk` `{numbers[], label?}` | admin | Import en masse (sans rate-limit) |
 | `GET /api/operators` | membre | Réputation par opérateur (quels grossistes concentrent le spam) |
-| `POST /api/check-sms` `{sender, text}` | membre | Analyse anti-smishing d'un SMS |
+| `POST /api/check-sms` `{sender}` | membre | Réputation de l'expéditeur d'un SMS (le texte reste sur le téléphone) |
 | `POST /api/feedback` `{number, wasSpam}` | membre | Retour « était-ce du spam ? » (affine le score) |
 | `GET /api/federation/feed` | public | Flux des numéros confirmés (≥2 membres), pour la fédération |
 | `GET /api/stats` | admin | Statistiques (dashboard) |
@@ -205,7 +215,9 @@ démarchage (décision 2022-1583 : 0162, 0163, 0270, 0271, 0377, 0378, 0424,
   heuristiques sont neutralisées si les membres ont majoritairement blanchi le
   numéro (« pas spam »), jamais un signal fiable.
 - **Feedback utilisateur** : « était-ce du spam ? » tempère le score et réduit
-  les faux positifs.
+  les faux positifs. Seuls les membres de confiance comptent, et il faut
+  **deux** retours « pas spam » concordants pour neutraliser complètement les
+  heuristiques (un seul suffit à faire baisser le score).
 - **Auto-signalement** : les numéros bloqués/silenciés par l'app et encore
   inconnus du groupe sont remontés automatiquement (catégorie `demarchage` pour
   l'ARCEP, sinon `auto`) → nourrit la détection de campagne et la réputation.
@@ -231,6 +243,26 @@ démarchage (décision 2022-1583 : 0162, 0163, 0270, 0271, 0377, 0378, 0424,
   hors-ligne, suit le mode de filtrage) et **whitelist** manuelle de numéros.
 - **Historique actionnable** : appuyer sur un appel du journal permet de le
   **signaler au groupe** ou de l'**ajouter à la whitelist** en un geste.
+
+### Synchro incrémentale de la liste de blocage
+
+`GET /api/numbers` est de loin la plus grosse réponse de l'API et l'app la
+redemande à chaque ouverture. Le client rejoue le `syncedAt` et le
+`listVersion` de sa dernière synchro :
+
+```bash
+curl "$URL/api/numbers?since=2026-07-25+12:00:00&v=3" -H "X-Api-Key: $KEY"
+# → {"community":[…],"imported":[…],"full":false,"syncedAt":"…","listVersion":3}
+```
+
+Les **ajouts** se déduisent des horodatages. Les **retraits** (un membre qui
+retire son signalement, un faux positif écarté par l'admin, un numéro qui
+sort d'une liste amont) sont invisibles d'un delta : ils incrémentent
+`listVersion`, ce qui fait répondre `full: true` et remplacer le cache du
+téléphone. Sans ça, un numéro retiré resterait bloqué indéfiniment. Les
+retraits étant rares et les ajouts le cas courant, la synchro coûte quelques
+dizaines d'octets en régime établi. Omettre les paramètres force une synchro
+complète.
 
 ### Identification de l'opérateur (open data ARCEP MAJNUM)
 
@@ -264,16 +296,33 @@ ligne :
   constant (`subtle::ConstantTimeEq`).
 - **Clé admin** jamais stockée en clair — seul son hash SHA-256 est en base ;
   `ADMIN_KEY` et `BOOTSTRAP_TOKEN` fournis par variables d'environnement.
-- **Rate-limiting** par IP (IP réelle via `CF-Connecting-IP` derrière
-  Cloudflare) : plafond global, quotas serrés sur `bootstrap`, `reports`,
-  `join-requests`, et **blocage après 20 clés invalides** (anti-bruteforce).
+- **Rate-limiting par IP** : plafond global, quotas serrés sur `bootstrap`,
+  `reports`, `join-requests`, `invite`. L'IP retenue est celle du **socket**.
+  `CF-Connecting-IP` n'est pris en compte que si `TRUST_PROXY=1` — sinon
+  n'importe quel client se donnerait une IP différente à chaque requête et
+  annulerait tous les quotas. **À poser derrière Cloudflare ou un
+  reverse-proxy** (c'est le cas de la stack `docker-compose.yml`), à laisser
+  à 0 pour un serveur exposé en direct.
 - **Validation stricte des entrées** : un signalement n'accepte qu'un numéro
   au format E.164 ; tout le reste (SQL, HTML, payloads) est rejeté en 400.
 - **Anti-injection** : requêtes SQL exclusivement paramétrées (sqlx),
   échappement HTML systématique de toute donnée rendue dans une page.
 - **En-têtes** `Content-Security-Policy`, `X-Content-Type-Options`,
-  `X-Frame-Options`, `Referrer-Policy`.
-- **Corps de requête plafonné** (8 ko), longueurs de champs bornées.
+  `X-Frame-Options`, `Referrer-Policy`, `Strict-Transport-Security`.
+- **Corps de requête plafonné** (8 ko ; 256 ko sur `/api/reports/bulk`,
+  réservé à l'admin), longueurs de champs bornées.
+- **Anti-empoisonnement cohérent** : un membre marqué « douteux »
+  (`trusted = 0`) ne compte ni dans les signalements, ni dans les campagnes,
+  ni dans le flux de fédération, **ni dans les retours « pas spam »**. Et il
+  faut **au moins deux** retours « pas spam » pour neutraliser les
+  heuristiques : un seul téléphone compromis ne rouvre pas la porte au
+  groupe (un retour isolé fait quand même baisser le score).
+- **Fédération en HTTPS uniquement** : le flux d'un pair alimente la
+  blocklist appliquée aux appels, un pair en clair laisserait un
+  intermédiaire réseau choisir qui est bloqué.
+- **Contenu des SMS jamais transmis** : les heuristiques anti-smishing
+  tournent sur le téléphone, le serveur ne reçoit que le numéro de
+  l'expéditeur (voir plus haut).
 
 ## Qualité & CI/CD
 

@@ -12,6 +12,11 @@ const kPrefAdminKey = 'admin_key'; // stocké seulement sur l'appareil de l'admi
 const kPrefScreeningMode = 'screening_mode'; // alert | silence | block
 const kPrefSkipContacts = 'skip_contacts'; // bool (défaut true)
 const kPrefCachedNumbers = 'cached_numbers'; // tableau JSON pour lookup offline
+// Synchro incrémentale de /api/numbers : horodatage + version de la liste
+// renvoyés par la dernière synchro, et liste du groupe accumulée.
+const kPrefGroupSince = 'group_since';
+const kPrefGroupVersion = 'group_version';
+const kPrefGroupCommunity = 'group_community';
 const kPrefSmsFilter = 'sms_filter'; // bool (défaut false) — détection SMS
 const kPrefWhitelist = 'whitelist'; // tableau JSON de numéros jamais filtrés
 const kPrefNightSilence = 'night_silence'; // bool — silence la nuit
@@ -25,6 +30,19 @@ const kPrefBlockIntl = 'block_intl'; // numéros internationaux
 const kPrefBlockPremium = 'block_premium'; // surtaxés (08x, hors 080 vert)
 
 const kRepoSlug = 'micferna/app-phone-spam';
+
+/// Normalisation E.164 « best effort » (miroir de `toE164` côté Kotlin et de
+/// `normalize_number` côté serveur). Sert à stocker la whitelist sous la même
+/// forme que les numéros présentés par l'opérateur : saisir « 06 12 34 56 78 »
+/// et recevoir « +33612345678 » doit désigner le même numéro.
+String normalizeFr(String raw) {
+  var n = raw.replaceAll(RegExp(r'[\s.\-()]'), '');
+  if (n.startsWith('00')) n = '+${n.substring(2)}';
+  if (n.length == 10 && n.startsWith('0') && n[1] != '0') {
+    n = '+33${n.substring(1)}';
+  }
+  return n;
+}
 
 /// Dernier tag de release publié sur GitHub (ex : "v1.2.0"), ou null.
 Future<String?> latestReleaseTag() async {
@@ -221,26 +239,67 @@ class ApiClient {
     }
   }
 
+  /// Synchro de la liste du groupe, en incrémental.
+  ///
+  /// C'est de loin la plus grosse réponse de l'API et l'app la redemande à
+  /// chaque ouverture. On renvoie au serveur l'horodatage et la version de la
+  /// dernière synchro : il ne répond alors que ce qui a bougé, et on fusionne.
+  /// Quand un numéro a été RETIRÉ de la liste, le serveur incrémente sa
+  /// version et répond `full: true` — la liste reçue fait alors autorité et
+  /// remplace le cache, sinon on garderait des numéros bloqués à tort.
   Future<List<GroupNumber>> groupNumbers() async {
-    final res = await http
-        .get(_uri('/api/numbers'), headers: _headers)
-        .timeout(const Duration(seconds: 8));
+    final prefs = await SharedPreferences.getInstance();
+    final since = prefs.getString(kPrefGroupSince);
+    final version = prefs.getInt(kPrefGroupVersion);
+
+    var path = '/api/numbers';
+    if (since != null && version != null) {
+      path += '?since=${Uri.encodeQueryComponent(since)}&v=$version';
+    }
+    final res =
+        await http.get(_uri(path), headers: _headers).timeout(const Duration(seconds: 8));
     if (res.statusCode != 200) throw Exception('Erreur ${res.statusCode}');
     final body = jsonDecode(res.body);
-    final community = body['community'] as List;
-    final imported = (body['imported'] as List?) ?? [];
+    final full = body['full'] != false; // serveur ancien sans le champ → complet
 
-    // Cache hors-ligne : tous les numéros connus (communauté + importés)
-    // → lus par le service natif pour un blocage instantané même sans réseau.
-    final all = <String>{
-      ...community.map((e) => e['number'] as String),
-      ...imported.map((e) => e['number'] as String),
-    };
-    final prefs = await SharedPreferences.getInstance();
+    // État accumulé : la communauté (affichée) indexée par numéro, et
+    // l'ensemble de tous les numéros connus (communauté + listes importées)
+    // que le service natif consulte pour bloquer hors-ligne.
+    final community = <String, Map<String, dynamic>>{};
+    final all = <String>{};
+    if (!full) {
+      final prev = prefs.getString(kPrefGroupCommunity);
+      if (prev != null) {
+        for (final e in jsonDecode(prev) as List) {
+          community[e['number'] as String] = Map<String, dynamic>.from(e as Map);
+        }
+      }
+      final prevAll = prefs.getString(kPrefCachedNumbers);
+      if (prevAll != null) {
+        all.addAll((jsonDecode(prevAll) as List).map((e) => '$e'));
+      }
+    }
+
+    for (final e in body['community'] as List) {
+      final entry = Map<String, dynamic>.from(e as Map);
+      community[entry['number'] as String] = entry;
+      all.add(entry['number'] as String);
+    }
+    for (final e in (body['imported'] as List?) ?? []) {
+      all.add(e['number'] as String);
+    }
+
+    await prefs.setString(kPrefGroupCommunity, jsonEncode(community.values.toList()));
     await prefs.setString(kPrefCachedNumbers, jsonEncode(all.toList()));
+    final syncedAt = body['syncedAt'] as String?;
+    final listVersion = body['listVersion'] as int?;
+    if (syncedAt != null && listVersion != null) {
+      await prefs.setString(kPrefGroupSince, syncedAt);
+      await prefs.setInt(kPrefGroupVersion, listVersion);
+    }
 
-    return community
-        .map((e) => GroupNumber.fromJson(e as Map<String, dynamic>))
+    return community.values
+        .map((e) => GroupNumber.fromJson(e))
         .toList()
       ..sort((a, b) => (b.lastReport ?? '').compareTo(a.lastReport ?? ''));
   }

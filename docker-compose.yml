@@ -17,6 +17,13 @@ services:
     # défini au bootstrap (« premier arrivé »).
     environment:
       - ADMIN_KEY=${ADMIN_KEY}
+      # Cette stack est servie derrière Cloudflare, qui écrase CF-Connecting-IP
+      # avec l'IP réelle du client : on peut donc s'y fier pour la limitation
+      # de débit. INDISPENSABLE ici — sans ce réglage le backend prendrait
+      # l'IP du socket, c'est-à-dire celle de l'edge Cloudflare, et tous les
+      # membres se partageraient le même quota. À laisser à 0 (défaut) pour un
+      # serveur exposé en direct, où l'en-tête serait fourni par l'attaquant.
+      - TRUST_PROXY=1
     volumes:
       - data:/data
     restart: unless-stopped
