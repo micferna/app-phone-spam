@@ -6,16 +6,24 @@ use sqlx::SqlitePool;
 
 use crate::normalize::normalize_number;
 
+/// HTTPS uniquement : le flux d'un pair alimente directement la blocklist
+/// appliquée aux appels des membres. En clair, un intermédiaire réseau
+/// choisirait quels numéros le groupe bloque (ou débloque).
 pub fn parse_peers(raw: &str) -> Vec<String> {
     raw.split(',')
         .map(|s| s.trim().trim_end_matches('/').to_string())
-        .filter(|s| s.starts_with("https://") || s.starts_with("http://"))
+        .filter(|s| {
+            if s.starts_with("http://") {
+                eprintln!("Fédération : pair ignoré (HTTPS obligatoire) : {s}");
+                return false;
+            }
+            s.starts_with("https://")
+        })
         .collect()
 }
 
 fn host_of(url: &str) -> String {
     url.strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))
         .unwrap_or(url)
         .split('/')
         .next()
@@ -70,6 +78,21 @@ async fn pull_one(
         return Ok(0); // rien de confirmé chez le pair : on garde l'existant
     }
     let source = format!("federation:{}", host_of(peer));
+    let incoming: std::collections::HashSet<String> = arr
+        .iter()
+        .filter_map(|i| i.get("number").and_then(|v| v.as_str()))
+        .filter_map(normalize_number)
+        .collect();
+    // Un numéro qui disparaît du flux du pair sort de la liste de blocage :
+    // seul ce cas oblige les téléphones à une resynchro complète.
+    let before: Vec<String> =
+        sqlx::query_scalar("SELECT number FROM imported_numbers WHERE source = ?")
+            .bind(&source)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+    let dropped = before.iter().any(|n| !incoming.contains(n));
+
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     sqlx::query("DELETE FROM imported_numbers WHERE source = ?")
         .bind(&source)
@@ -94,5 +117,8 @@ async fn pull_one(
         }
     }
     tx.commit().await.map_err(|e| e.to_string())?;
+    if dropped {
+        crate::handlers::bump_list_version(pool).await;
+    }
     Ok(n)
 }

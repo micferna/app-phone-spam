@@ -11,6 +11,24 @@ import java.io.File
 object History {
     const val FILE = "call_history.jsonl"
 
+    /// Numéro du dernier appel réellement identifiable, pour le raccourci
+    /// « Signaler le dernier appel ». On ignore les SMS, les signalements déjà
+    /// faits et les appels masqués (rien à signaler au groupe).
+    fun lastCallNumber(ctx: Context): String? {
+        return try {
+            val file = File(ctx.filesDir, FILE)
+            if (!file.exists()) return null
+            file.readLines().asReversed().firstNotNullOfOrNull { line ->
+                val o = runCatching { JSONObject(line) }.getOrNull() ?: return@firstNotNullOfOrNull null
+                if (o.optString("kind", "call") != "call") return@firstNotNullOfOrNull null
+                val n = o.optString("number")
+                if (n.isEmpty() || n == "Masqué") null else n
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     @Synchronized
     fun log(
         ctx: Context,

@@ -14,6 +14,13 @@ pub struct Bucket {
     pub reset: Instant,
 }
 
+/// IP client retenue pour la limitation de débit, résolue UNE fois par le
+/// middleware et déposée dans les extensions de la requête. Les handlers
+/// lisent cette valeur et jamais un en-tête : `CF-Connecting-IP` est fourni
+/// par le client et ne vaut que derrière un proxy qui le réécrit.
+#[derive(Clone)]
+pub struct ClientIp(pub String);
+
 const MAX_BUCKETS: usize = 50_000;
 
 #[derive(Clone)]
@@ -39,13 +46,20 @@ pub struct AppState {
     /// En mémoire : une redéploiement invalide les sessions (l'admin se
     /// reconnecte). Évite d'embarquer la clé admin dans le HTML du dashboard.
     pub sessions: Arc<Mutex<HashMap<String, u64>>>,
+    /// `true` seulement si le serveur est DERRIÈRE un proxy de confiance qui
+    /// réécrit `CF-Connecting-IP` (Cloudflare le fait). Réglable via
+    /// `TRUST_PROXY=1`. Par défaut `false` : on utilise l'IP réelle du socket,
+    /// sinon n'importe quel client se donnerait une IP au hasard à chaque
+    /// requête et annulerait tous les quotas.
+    pub trust_proxy: bool,
 }
 
 impl AppState {
     /// Renvoie `true` si la requête est autorisée (sous le quota). Map bornée :
     /// un flood d'IP distinctes ne peut pas faire enfler la mémoire.
     ///
-    /// Note sécurité : la clé de débit dérive de `CF-Connecting-IP`. On NE
+    /// Note sécurité : la clé de débit dérive de l'IP résolue par le
+    /// middleware (socket, ou `CF-Connecting-IP` si `TRUST_PROXY=1`). On NE
     /// verrouille PAS d'IP sur les échecs d'auth (un attaquant pourrait
     /// spoofer l'IP d'un membre légitime pour le bloquer = DoS ciblé). La
     /// résistance au brute-force repose sur l'entropie des secrets (clés et

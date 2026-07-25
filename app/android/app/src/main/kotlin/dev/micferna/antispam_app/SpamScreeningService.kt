@@ -253,11 +253,16 @@ class SpamScreeningService : CallScreeningService() {
     }
 
     // --- Whitelist manuelle (préférence flutter.whitelist = tableau JSON) ---
+    /// Comparaison en E.164 des DEUX côtés : l'utilisateur saisit « 06 12 34 56 78 »
+    /// ou « 0612345678 » dans les réglages, l'appel arrive en « +33612345678 ».
+    /// L'égalité de chaînes brutes ne matchait donc jamais et la whitelist
+    /// n'avait aucun effet.
     private fun isWhitelisted(prefs: android.content.SharedPreferences, number: String): Boolean {
         val raw = prefs.getString("flutter.whitelist", null) ?: return false
+        val target = toE164(number)
         return try {
             val arr = JSONArray(raw)
-            (0 until arr.length()).any { arr.optString(it) == number }
+            (0 until arr.length()).any { toE164(arr.optString(it)) == target }
         } catch (_: Exception) {
             false
         }
@@ -275,11 +280,23 @@ class SpamScreeningService : CallScreeningService() {
 
     // --- Cache hors-ligne : la liste des numéros suspects synchronisée par
     // l'app (préférence flutter.cached_numbers = tableau JSON de numéros). ---
+    /// Comparaison en E.164 : le serveur renvoie des numéros normalisés
+    /// (« +33612345678 ») alors que l'opérateur présente souvent l'appel au
+    /// format national (« 0612345678 »). Sans normalisation, ce filet
+    /// hors-ligne ne se déclenchait jamais — précisément dans le cas où il est
+    /// censé servir (serveur injoignable).
     private fun cachedSuspicious(prefs: android.content.SharedPreferences, number: String): Boolean {
         val raw = prefs.getString("flutter.cached_numbers", null) ?: return false
+        val target = toE164(number)
         return try {
             val arr = JSONArray(raw)
-            (0 until arr.length()).any { arr.optString(it) == number }
+            // Les entrées viennent du serveur, déjà en E.164 : l'égalité directe
+            // suffit presque toujours, `toE164` n'est le repli que pour un cache
+            // hérité d'une ancienne version.
+            (0 until arr.length()).any {
+                val s = arr.optString(it)
+                s == target || toE164(s) == target
+            }
         } catch (_: Exception) {
             false
         }

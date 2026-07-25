@@ -119,8 +119,20 @@ impl OperatorIndex {
 
 /// Télécharge et parse MAJNUM. `text` récupéré en latin-1 par l'appelant.
 pub async fn fetch_majnum() -> Result<String, String> {
+    // Les redirections ne peuvent pas quitter le domaine ARCEP (cohérent avec
+    // l'allowlist d'hôtes de `lists.rs`) : une redirection ouverte en amont ne
+    // doit pas transformer ce fetch en requête vers un hôte arbitraire.
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 5 {
+                attempt.stop()
+            } else if attempt.url().host_str() == Some("extranet.arcep.fr") {
+                attempt.follow()
+            } else {
+                attempt.stop()
+            }
+        }))
         .build()
         .map_err(|e| e.to_string())?;
     let resp = client

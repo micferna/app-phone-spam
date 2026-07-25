@@ -58,6 +58,19 @@
             android:name=".ReportReceiver"
             android:exported="false"/>
 
+        <!-- Tuile Réglages rapides : signaler le dernier appel en un geste,
+             même une fois la notification balayée -->
+        <service
+            android:name=".ReportTileService"
+            android:exported="true"
+            android:icon="@android:drawable/stat_sys_warning"
+            android:label="Signaler l'appel"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE"/>
+            </intent-filter>
+        </service>
+
         <!-- Réception des SMS entrants (détection anti-smishing) -->
         <receiver
             android:name=".SmsReceiver"
@@ -98,6 +111,14 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- Sans cette déclaration, la visibilité de paquets d'Android 11+ fait
+             renvoyer null à resolveActivity() pour smsto: — l'action
+             « Transférer au 33700 » n'apparaissait jamais sur les notifications
+             de SMS suspects. -->
+        <intent>
+            <action android:name="android.intent.action.SENDTO"/>
+            <data android:scheme="smsto"/>
         </intent>
     </queries>
 </manifest>

@@ -312,7 +312,7 @@ pub fn admin_dashboard_page(s: &serde_json::Value) -> String {
     // anormal (≥ 30 signalements/24 h) est signalé ; un membre « douteux »
     // (trusted = false) ne compte plus pour la protection du groupe.
     let mut members_html = String::new();
-    if let Some(arr) = s.get("members").and_then(|v| v.as_array()) {
+    if let Some(arr) = s.get("memberActivity").and_then(|v| v.as_array()) {
         for m in arr {
             let name = m.get("name").and_then(|v| v.as_str()).unwrap_or("?");
             let trusted = m.get("trusted").and_then(|v| v.as_bool()).unwrap_or(true);

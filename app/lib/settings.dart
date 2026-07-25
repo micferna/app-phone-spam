@@ -77,7 +77,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _addNumber() {
-    final n = _add.text.trim();
+    // Stocké normalisé : l'opérateur présente les appels en E.164, une saisie
+    // « 06 12 34 56 78 » doit désigner le même numéro.
+    final n = normalizeFr(_add.text.trim());
     if (n.isEmpty || _whitelist.contains(n)) return;
     setState(() {
       _whitelist.add(n);
