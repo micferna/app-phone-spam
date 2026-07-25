@@ -84,7 +84,7 @@ class SpamScreeningService : CallScreeningService() {
         // Détection locale des plages ARCEP de démarchage : fiable même serveur
         // injoignable / réseau lent (ces numéros 0270…, 0568…, 0948… SONT du
         // démarchage par définition, pas besoin du serveur pour le savoir).
-        val arcepLocal = isArcepDemarchage(number)
+        val arcepLocal = isArcepDemarchage(number) || isArcepFromServer(prefs, toE164(number))
         // Règles par catégorie (VoIP 09 / international / surtaxé 08) : décision
         // locale selon les interrupteurs de réglages. Non-null = catégorie
         // filtrée par l'utilisateur → traitée comme suspecte selon le mode.
@@ -331,6 +331,30 @@ class SpamScreeningService : CallScreeningService() {
     private fun isArcepDemarchage(number: String): Boolean {
         val e = toE164(number)
         return arcepPrefixes.any { e.startsWith(it) }
+    }
+
+    /// Racines ARCEP servies par le serveur, en COMPLÉMENT de celles compilées
+    /// (jamais en remplacement) : une réponse vide, tronquée ou farfelue ne
+    /// peut donc pas réduire la protection, seulement l'étendre — et le serveur
+    /// a déjà ce pouvoir via `suspicious` et la liste de blocage.
+    ///
+    /// Chaque entrée est revalidée ici (`+` puis 5 à 15 chiffres) : le même
+    /// garde-fou anti-empoisonnement que le backend applique aux préfixes
+    /// importés. Sans ça, un `+` seul bloquerait tous les appels.
+    private fun isArcepFromServer(prefs: android.content.SharedPreferences, e164: String): Boolean {
+        val raw = prefs.getString("flutter.arcep_prefixes", null) ?: return false
+        return try {
+            val arr = JSONArray(raw)
+            (0 until arr.length()).any {
+                val p = arr.optString(it)
+                p.length in 6..16 &&
+                    p.startsWith("+") &&
+                    p.drop(1).all { c -> c.isDigit() } &&
+                    e164.startsWith(p)
+            }
+        } catch (_: Exception) {
+            false
+        }
     }
 
     /// JSON minimal pour notifier un blocage ARCEP décidé localement (sans
