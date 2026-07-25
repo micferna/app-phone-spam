@@ -535,6 +535,11 @@ pub async fn numbers(
     ok(json!({
         "community": community.iter().map(|(n, c, l)| json!({"number": n, "reportCount": c, "lastReport": l})).collect::<Vec<_>>(),
         "imported": imported.iter().map(|(n, s, l)| json!({"number": n, "source": s, "label": l})).collect::<Vec<_>>(),
+        // Racines ARCEP de démarchage : envoyées à CHAQUE synchro, delta compris
+        // (une vingtaine de chaînes, ~200 octets). C'est ce qui permet de
+        // corriger la liste sans publier de release et sans attendre que
+        // chaque membre mette son app à jour.
+        "arcepPrefixes": crate::normalize::arcep_prefixes(),
         // `false` = delta à fusionner ; `true` = la liste reçue fait autorité.
         "full": since.is_none(),
         "syncedAt": synced_at,

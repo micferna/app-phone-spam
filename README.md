@@ -206,12 +206,24 @@ métropole, et 09475 à 09479 outre-mer (sous leur indicatif pays propre :
 +590 Guadeloupe, +594 Guyane, +596 Martinique, +262 Réunion/Mayotte).
 Détection intégrée, aucun import nécessaire.
 
-> ⚠️ Ces racines sont **codées en dur**, dans `backend/src/normalize.rs` et sa
-> réplique `SpamScreeningService.kt` (pour que la détection tienne hors-ligne).
-> Contrairement à l'annuaire MAJNUM et aux listes publiques, elles **ne se
-> mettent pas à jour toutes seules** : une nouvelle décision ARCEP demande de
-> modifier les deux fichiers et de publier une release de l'app.
->
+Ces racines n'existent que dans le **PDF** d'une décision ARCEP : aucun des 12
+fichiers open data ne décrit les catégories du plan (ils ne donnent que
+l'attribution des tranches aux opérateurs). Elles sont donc écrites à la main
+dans `backend/src/normalize.rs` — relues, testées, versionnées. Les dériver
+automatiquement supposerait de parser un PDF pour alimenter une liste de
+**blocage dur**, ce qui est exactement le genre de source qu'on ne veut pas
+voir décider quels appels sont rejetés.
+
+En revanche, le serveur les **sert aux téléphones** à chaque synchro
+(`arcepPrefixes` dans `/api/numbers`, ~200 octets). Corriger la liste ne
+demande donc qu'un déploiement du backend : plus besoin de publier une release
+et d'attendre que chaque membre installe l'app. Côté téléphone, la liste reçue
+**s'ajoute** à celle compilée dans l'APK et ne la remplace jamais — une réponse
+vide ou tronquée ne peut pas réduire la protection, et le filtrage hors-ligne
+reste garanti même sans jamais avoir synchronisé. Chaque racine reçue est
+revalidée (`+` puis 5 à 15 chiffres), même garde-fou que pour les préfixes
+importés.
+
 > Non couvertes à ce jour : les racines 0937, 0938 et 09390–09394 (métropole),
 > réservées aux échanges avec une **plateforme technique** — c'est là que
 > vivent les automates d'appel, mais aussi les rappels bancaires et les codes

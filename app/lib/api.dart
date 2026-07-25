@@ -17,6 +17,8 @@ const kPrefCachedNumbers = 'cached_numbers'; // tableau JSON pour lookup offline
 const kPrefGroupSince = 'group_since';
 const kPrefGroupVersion = 'group_version';
 const kPrefGroupCommunity = 'group_community';
+// Racines ARCEP de démarchage servies par le serveur (lues par le natif).
+const kPrefArcepPrefixes = 'arcep_prefixes';
 const kPrefSmsFilter = 'sms_filter'; // bool (défaut false) — détection SMS
 const kPrefWhitelist = 'whitelist'; // tableau JSON de numéros jamais filtrés
 const kPrefNightSilence = 'night_silence'; // bool — silence la nuit
@@ -287,6 +289,13 @@ class ApiClient {
     }
     for (final e in (body['imported'] as List?) ?? []) {
       all.add(e['number'] as String);
+    }
+
+    // Racines ARCEP servies par le serveur : le service natif les ajoute à sa
+    // liste compilée. Permet de corriger la détection sans release de l'app.
+    final arcep = (body['arcepPrefixes'] as List?)?.map((e) => '$e').toList();
+    if (arcep != null && arcep.isNotEmpty) {
+      await prefs.setString(kPrefArcepPrefixes, jsonEncode(arcep));
     }
 
     await prefs.setString(kPrefGroupCommunity, jsonEncode(community.values.toList()));
