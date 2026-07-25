@@ -22,6 +22,8 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        // Réarme la vérification quotidienne des mises à jour (idempotent).
+        UpdateCheckService.schedule(this)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
             .setMethodCallHandler { call, result ->
                 val roleManager = getSystemService(RoleManager::class.java)

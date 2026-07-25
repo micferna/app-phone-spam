@@ -198,9 +198,24 @@ Les routes admin exigent `X-Admin-Key`.
 | `POST /api/update-lists` | admin | Forcer la mise à jour des listes publiques |
 
 Un numéro est marqué `suspicious` s'il est signalé par le groupe, présent
-dans une liste publique importée, **ou** dans les préfixes ARCEP réservés au
-démarchage (décision 2022-1583 : 0162, 0163, 0270, 0271, 0377, 0378, 0424,
-0425, 0568, 0569, 0948, 0949 — détection intégrée, aucun import nécessaire).
+dans une liste publique importée, **ou** dans les racines ARCEP des « numéros
+polyvalents vérifiés » — la catégorie qu'un professionnel doit présenter comme
+identifiant d'appelant pour du démarchage (décision 2022-1583 § 2.3.7a) :
+0162, 0163, 0270, 0271, 0377, 0378, 0424, 0425, 0568, 0569, 0948, 0949 en
+métropole, et 09475 à 09479 outre-mer (sous leur indicatif pays propre :
++590 Guadeloupe, +594 Guyane, +596 Martinique, +262 Réunion/Mayotte).
+Détection intégrée, aucun import nécessaire.
+
+> ⚠️ Ces racines sont **codées en dur**, dans `backend/src/normalize.rs` et sa
+> réplique `SpamScreeningService.kt` (pour que la détection tienne hors-ligne).
+> Contrairement à l'annuaire MAJNUM et aux listes publiques, elles **ne se
+> mettent pas à jour toutes seules** : une nouvelle décision ARCEP demande de
+> modifier les deux fichiers et de publier une release de l'app.
+>
+> Non couvertes à ce jour : les racines 0937, 0938 et 09390–09394 (métropole),
+> réservées aux échanges avec une **plateforme technique** — c'est là que
+> vivent les automates d'appel, mais aussi les rappels bancaires et les codes
+> à usage unique. Les bloquer en masse ferait des faux positifs.
 
 ### Fonctionnalités avancées
 
@@ -234,8 +249,14 @@ démarchage (décision 2022-1583 : 0162, 0163, 0270, 0271, 0377, 0378, 0424,
   automatiquement, sans échange manuel.
 - **Sauvegardes** : dump SQLite quotidien rotatif (7 jours) sur le volume +
   `GET /api/export` (admin) pour récupérer un backup off-site.
-- **Bandeau « campagne active »** et **notification de mise à jour** (nouvelle
-  release GitHub) dans l'app.
+- **Bandeau « campagne active »** dans l'app.
+- **Notification de mise à jour, même app fermée** : une vérification
+  quotidienne (`JobScheduler`, persistée aux redémarrages) compare la version
+  installée à la dernière release GitHub et notifie une seule fois par version
+  publiée. La bannière in-app ne suffisait pas : cette app travaille seule et
+  ne s'ouvre jamais, un correctif de sécurité pouvait donc rester non installé
+  indéfiniment. L'appui sur la notification ouvre l'app, qui propose
+  l'installation en un tap.
 - **Réglages avancés** : « ne pas déranger la nuit » (silence des appels
   suspects sur une plage horaire), **filtrage des numéros masqués** (sonner /
   silencier / bloquer les appels anonymes, décision 100 % locale), **règles par

@@ -33,9 +33,27 @@ pub fn normalize_number(raw: &str) -> Option<String> {
     }
 }
 
+/// Racines des « numéros polyvalents vérifiés » (décision ARCEP 2022-1583,
+/// § 2.3.7a) : la catégorie qu'un professionnel doit présenter comme
+/// identifiant d'appelant pour du démarchage.
+///
+/// Outre-mer, ces racines vivent sous leur PROPRE indicatif pays (+590, +594,
+/// +596, +262), pas sous +33 : un appel guadeloupéen arrive en `+5909475…`.
+/// Les formes en `+339475…` sont conservées en plus, car `normalize_number`
+/// préfixe en +33 tout numéro national à 10 chiffres — c'est sous cette forme
+/// qu'un tel numéro composé localement nous parvient. Aucun risque de
+/// collision : en métropole 0947 n'est attribué à rien (les polyvalents
+/// métropolitains sont 0940–0946, les vérifiés 0948–0949).
 const ARCEP_PREFIXES: &[&str] = &[
+    // France métropolitaine (+33)
     "+33162", "+33163", "+33270", "+33271", "+33377", "+33378", "+33424", "+33425", "+33568",
-    "+33569", "+33948", "+33949", "+339475", "+339476", "+339477", "+339478", "+339479",
+    "+33569", "+33948", "+33949",   // Outre-mer, indicatif pays propre
+    "+5909475", // Guadeloupe, Saint-Martin, Saint-Barthélemy
+    "+5949476", // Guyane
+    "+5969477", // Martinique
+    "+2629478", "+2629479", // Mayotte, La Réunion et autres territoires de l'Océan Indien
+    // Mêmes racines vues via la normalisation nationale à 10 chiffres
+    "+339475", "+339476", "+339477", "+339478", "+339479",
 ];
 
 pub fn is_arcep_demarchage(e164: &str) -> bool {
@@ -139,5 +157,23 @@ mod tests {
         assert!(is_arcep_demarchage("+33948123456"));
         assert!(is_arcep_demarchage("+33162000000"));
         assert!(!is_arcep_demarchage("+33612345678"));
+    }
+
+    #[test]
+    fn detecte_arcep_outre_mer() {
+        // Sous leur indicatif pays réel (appel reçu depuis la métropole).
+        assert!(is_arcep_demarchage("+5909475123456"));
+        assert!(is_arcep_demarchage("+5949476123456"));
+        assert!(is_arcep_demarchage("+5969477123456"));
+        assert!(is_arcep_demarchage("+2629478123456"));
+        assert!(is_arcep_demarchage("+2629479123456"));
+        // Et via la normalisation d'un national à 10 chiffres composé sur place.
+        assert_eq!(
+            normalize_number("0947512345").as_deref(),
+            Some("+33947512345")
+        );
+        assert!(is_arcep_demarchage("+33947512345"));
+        // Un fixe guadeloupéen ordinaire (0590…) ne doit pas être pris.
+        assert!(!is_arcep_demarchage("+590590123456"));
     }
 }

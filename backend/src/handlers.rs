@@ -1246,6 +1246,9 @@ async fn collect_stats(st: &AppState) -> Value {
     .unwrap_or_default();
 
     json!({
+        // Incohérence TRUST_PROXY / trafic observé, remontée dans le dashboard :
+        // un avertissement dans les logs du conteneur ne se voit pas.
+        "proxyWarning": st.proxy_misconfig(),
         "members": members,
         "reportedNumbers": reported,
         "totalReports": total_reports,
